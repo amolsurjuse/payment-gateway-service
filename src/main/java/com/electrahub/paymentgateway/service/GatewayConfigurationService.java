@@ -346,6 +346,12 @@ public class GatewayConfigurationService {
     }
 
     public PaymentRoute createPaymentRoute(CreatePaymentRouteRequest request, UUID actorId) {
+        if (request.enabled()) {
+            throw new GatewayBusinessException(
+                    "PAYMENT_ROUTE_ACTIVATION_REQUIRED",
+                    "Create payment routes disabled and activate them with the separately audited enable action."
+            );
+        }
         RouteConfiguration routeConfiguration = validateRouteConfiguration(
                 request.merchantAccountId(),
                 request.settlementCurrency(),
@@ -374,7 +380,7 @@ public class GatewayConfigurationService {
                 request.channel().name(),
                 request.paymentMethod().name(),
                 Math.max(0, request.priority()),
-                request.enabled(),
+                false,
                 encodeCapabilities(capabilities),
                 request.effectiveFrom() == null ? null : offset(request.effectiveFrom()),
                 request.effectiveTo() == null ? null : offset(request.effectiveTo()),
