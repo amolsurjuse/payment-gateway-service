@@ -1,0 +1,169 @@
+databaseChangeLog:
+  - changeSet:
+      id: payment-gateway-0001-schema
+      author: electrahub
+      changes:
+        - sql:
+            splitStatements: false
+            sql: CREATE SCHEMA IF NOT EXISTS payment_gateway;
+        - createTable:
+            schemaName: payment_gateway
+            tableName: gateway_connection
+            columns:
+              - column: { name: id, type: UUID, constraints: { primaryKey: true, nullable: false } }
+              - column: { name: provider_code, type: VARCHAR(32), constraints: { nullable: false } }
+              - column: { name: environment, type: VARCHAR(16), constraints: { nullable: false } }
+              - column: { name: status, type: VARCHAR(24), constraints: { nullable: false } }
+              - column: { name: adapter_version, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: endpoint_profile, type: VARCHAR(80), constraints: { nullable: false } }
+              - column: { name: capabilities, type: TEXT, constraints: { nullable: false } }
+              - column: { name: credential_secret_reference, type: VARCHAR(256) }
+              - column: { name: webhook_secret_reference, type: VARCHAR(256) }
+              - column: { name: certificate_secret_reference, type: VARCHAR(256) }
+              - column: { name: validated_at, type: TIMESTAMP WITH TIME ZONE }
+              - column: { name: last_health_at, type: TIMESTAMP WITH TIME ZONE }
+              - column: { name: last_error_code, type: VARCHAR(96) }
+              - column: { name: configuration_version, type: INTEGER, defaultValueNumeric: 1, constraints: { nullable: false } }
+              - column: { name: created_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+              - column: { name: updated_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+        - createIndex:
+            schemaName: payment_gateway
+            tableName: gateway_connection
+            indexName: idx_gateway_connection_status
+            columns:
+              - column: { name: status }
+        - createTable:
+            schemaName: payment_gateway
+            tableName: merchant_payment_account
+            columns:
+              - column: { name: id, type: UUID, constraints: { primaryKey: true, nullable: false } }
+              - column: { name: connection_id, type: UUID, constraints: { nullable: false } }
+              - column: { name: enterprise_id, type: VARCHAR(80) }
+              - column: { name: network_id, type: VARCHAR(80) }
+              - column: { name: legal_entity_reference, type: VARCHAR(160), constraints: { nullable: false } }
+              - column: { name: provider_merchant_reference, type: VARCHAR(160), constraints: { nullable: false } }
+              - column: { name: merchant_country, type: VARCHAR(2), constraints: { nullable: false } }
+              - column: { name: settlement_currency, type: VARCHAR(3), constraints: { nullable: false } }
+              - column: { name: supported_presentment_currencies, type: TEXT, constraints: { nullable: false } }
+              - column: { name: status, type: VARCHAR(24), constraints: { nullable: false } }
+              - column: { name: created_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+              - column: { name: updated_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+        - addForeignKeyConstraint:
+            baseTableSchemaName: payment_gateway
+            baseTableName: merchant_payment_account
+            baseColumnNames: connection_id
+            referencedTableSchemaName: payment_gateway
+            referencedTableName: gateway_connection
+            referencedColumnNames: id
+            constraintName: fk_gateway_merchant_connection
+        - createIndex:
+            schemaName: payment_gateway
+            tableName: merchant_payment_account
+            indexName: idx_gateway_merchant_scope
+            columns:
+              - column: { name: enterprise_id }
+              - column: { name: network_id }
+        - createTable:
+            schemaName: payment_gateway
+            tableName: payment_route
+            columns:
+              - column: { name: id, type: UUID, constraints: { primaryKey: true, nullable: false } }
+              - column: { name: merchant_account_id, type: UUID, constraints: { nullable: false } }
+              - column: { name: charging_country, type: VARCHAR(2), constraints: { nullable: false } }
+              - column: { name: presentment_currency, type: VARCHAR(3), constraints: { nullable: false } }
+              - column: { name: settlement_currency, type: VARCHAR(3), constraints: { nullable: false } }
+              - column: { name: channel, type: VARCHAR(24), constraints: { nullable: false } }
+              - column: { name: payment_method, type: VARCHAR(32), constraints: { nullable: false } }
+              - column: { name: priority, type: INTEGER, constraints: { nullable: false } }
+              - column: { name: enabled, type: BOOLEAN, constraints: { nullable: false } }
+              - column: { name: required_capabilities, type: TEXT, constraints: { nullable: false } }
+              - column: { name: effective_from, type: TIMESTAMP WITH TIME ZONE }
+              - column: { name: effective_to, type: TIMESTAMP WITH TIME ZONE }
+              - column: { name: configuration_version, type: INTEGER, defaultValueNumeric: 1, constraints: { nullable: false } }
+              - column: { name: created_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+              - column: { name: updated_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+        - addForeignKeyConstraint:
+            baseTableSchemaName: payment_gateway
+            baseTableName: payment_route
+            baseColumnNames: merchant_account_id
+            referencedTableSchemaName: payment_gateway
+            referencedTableName: merchant_payment_account
+            referencedColumnNames: id
+            constraintName: fk_gateway_route_merchant
+        - createIndex:
+            schemaName: payment_gateway
+            tableName: payment_route
+            indexName: idx_gateway_route_resolution
+            columns:
+              - column: { name: merchant_account_id }
+              - column: { name: charging_country }
+              - column: { name: presentment_currency }
+              - column: { name: settlement_currency }
+              - column: { name: channel }
+              - column: { name: payment_method }
+              - column: { name: enabled }
+              - column: { name: priority }
+        - createTable:
+            schemaName: payment_gateway
+            tableName: gateway_operation
+            columns:
+              - column: { name: id, type: UUID, constraints: { primaryKey: true, nullable: false } }
+              - column: { name: route_id, type: UUID, constraints: { nullable: false } }
+              - column: { name: provider_code, type: VARCHAR(32), constraints: { nullable: false } }
+              - column: { name: payment_intent_id, type: VARCHAR(96), constraints: { nullable: false } }
+              - column: { name: payment_attempt_id, type: VARCHAR(96) }
+              - column: { name: operation_id, type: VARCHAR(96), constraints: { nullable: false } }
+              - column: { name: operation_type, type: VARCHAR(32), constraints: { nullable: false } }
+              - column: { name: idempotency_key, type: VARCHAR(128), constraints: { nullable: false } }
+              - column: { name: amount, type: DECIMAL(19,4), constraints: { nullable: false } }
+              - column: { name: currency, type: VARCHAR(3), constraints: { nullable: false } }
+              - column: { name: status, type: VARCHAR(32), constraints: { nullable: false } }
+              - column: { name: provider_reference, type: VARCHAR(160) }
+              - column: { name: public_transaction_reference, type: VARCHAR(160) }
+              - column: { name: error_code, type: VARCHAR(96) }
+              - column: { name: created_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+              - column: { name: updated_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+        - addForeignKeyConstraint:
+            baseTableSchemaName: payment_gateway
+            baseTableName: gateway_operation
+            baseColumnNames: route_id
+            referencedTableSchemaName: payment_gateway
+            referencedTableName: payment_route
+            referencedColumnNames: id
+            constraintName: fk_gateway_operation_route
+        - addUniqueConstraint:
+            schemaName: payment_gateway
+            tableName: gateway_operation
+            columnNames: operation_type,idempotency_key
+            constraintName: uq_gateway_operation_idempotency
+        - createIndex:
+            schemaName: payment_gateway
+            tableName: gateway_operation
+            indexName: idx_gateway_operation_recovery
+            columns:
+              - column: { name: status }
+              - column: { name: updated_at }
+        - createTable:
+            schemaName: payment_gateway
+            tableName: gateway_configuration_audit
+            columns:
+              - column: { name: id, type: UUID, constraints: { primaryKey: true, nullable: false } }
+              - column: { name: actor_id, type: UUID, constraints: { nullable: false } }
+              - column: { name: action, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: resource_type, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: resource_id, type: UUID, constraints: { nullable: false } }
+              - column: { name: before_state, type: TEXT }
+              - column: { name: after_state, type: TEXT }
+              - column: { name: occurred_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+        - createIndex:
+            schemaName: payment_gateway
+            tableName: gateway_configuration_audit
+            indexName: idx_gateway_configuration_audit_resource
+            columns:
+              - column: { name: resource_type }
+              - column: { name: resource_id }
+              - column: { name: occurred_at }
+      rollback:
+        - sql:
+            splitStatements: false
+            sql: DROP SCHEMA IF EXISTS payment_gateway CASCADE;

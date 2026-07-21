@@ -1,0 +1,12 @@
+spring:
+  datasource:
+    url: ${LOCAL_ENV_PAYMENT_GATEWAY_DATASOURCE_URL:jdbc:postgresql://127.0.0.1:58318/appdb}
+    username: ${LOCAL_ENV_PAYMENT_GATEWAY_DATASOURCE_USERNAME:appuser}
+    password: ${LOCAL_ENV_PAYMENT_GATEWAY_DATASOURCE_PASSWORD:Password@123}
+  liquibase:
+    enabled: true
+    default-schema: public
+
+logging:
+  level:
+    com.electrahub.paymentgateway: DEBUG

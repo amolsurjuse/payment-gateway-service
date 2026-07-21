@@ -1,0 +1,65 @@
+spring:
+  application:
+    name: payment-gateway-service
+  datasource:
+    url: ${ENV_PAYMENT_GATEWAY_DATASOURCE_URL:jdbc:postgresql://localhost:5432/payment_gateway_db}
+    username: ${ENV_PAYMENT_GATEWAY_DATASOURCE_USERNAME:payment_gateway_user}
+    password: ${ENV_PAYMENT_GATEWAY_DATASOURCE_PASSWORD:payment_gateway_password}
+    driver-class-name: org.postgresql.Driver
+  liquibase:
+    enabled: ${SPRING_LIQUIBASE_ENABLED:true}
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+    default-schema: ${SPRING_LIQUIBASE_DEFAULT_SCHEMA:public}
+    liquibase-schema: ${SPRING_LIQUIBASE_LIQUIBASE_SCHEMA:public}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:200ms}
+      timeout: ${REDIS_TIMEOUT:2s}
+  rabbitmq:
+    host: ${SPRING_RABBITMQ_HOST:localhost}
+    port: ${SPRING_RABBITMQ_PORT:5672}
+    username: ${SPRING_RABBITMQ_USERNAME:guest}
+    password: ${SPRING_RABBITMQ_PASSWORD:guest}
+
+server:
+  port: ${SERVER_PORT:8098}
+
+app:
+  access-context:
+    secret: ${APP_INTERNAL_ACCESS_CONTEXT_SECRET:}
+    cache-prefix: ${APP_ACCESS_CONTEXT_CACHE_PREFIX:admin:access-scope:v1:}
+  internal-service:
+    # Keep the control plane compatible with the existing internal-service
+    # secret while allowing a dedicated payment-gateway key during rollout.
+    key: ${PAYMENT_GATEWAY_INTERNAL_TOKEN:${APP_INTERNAL_SERVICE_KEY:${APP_SECURITY_INTERNAL_TOKEN:}}}
+  gateway:
+    route-cache-ttl: ${APP_GATEWAY_ROUTE_CACHE_TTL:10m}
+    route-cache-generation-key: ${APP_GATEWAY_ROUTE_CACHE_GENERATION_KEY:payment-gateway:route-cache-generation:v1}
+    mock-provider-enabled: ${APP_GATEWAY_MOCK_PROVIDER_ENABLED:true}
+    production-enabled: ${APP_GATEWAY_PRODUCTION_ENABLED:false}
+    operation-recovery-fixed-delay: ${APP_GATEWAY_OPERATION_RECOVERY_FIXED_DELAY:60000}
+    operation-recovery-lease: ${APP_GATEWAY_OPERATION_RECOVERY_LEASE:45s}
+    operation-recovery-initial-backoff: ${APP_GATEWAY_OPERATION_RECOVERY_INITIAL_BACKOFF:30s}
+    operation-recovery-max-backoff: ${APP_GATEWAY_OPERATION_RECOVERY_MAX_BACKOFF:30m}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  tracing:
+    sampling:
+      probability: ${PAYMENT_GATEWAY_TRACING_SAMPLING_PROBABILITY:1.0}
+
+logging:
+  level:
+    root: INFO
+    com.electrahub.paymentgateway: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] [%X{traceId:-},%X{spanId:-}] %logger{36} - %msg%n"
