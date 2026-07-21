@@ -115,7 +115,8 @@ databaseChangeLog:
               - column: { name: operation_id, type: VARCHAR(96), constraints: { nullable: false } }
               - column: { name: operation_type, type: VARCHAR(32), constraints: { nullable: false } }
               - column: { name: idempotency_key, type: VARCHAR(128), constraints: { nullable: false } }
-              - column: { name: amount, type: DECIMAL(19,4), constraints: { nullable: false } }
+              # YAML flow mappings treat commas as separators; quote precision types.
+              - column: { name: amount, type: "DECIMAL(19,4)", constraints: { nullable: false } }
               - column: { name: currency, type: VARCHAR(3), constraints: { nullable: false } }
               - column: { name: status, type: VARCHAR(32), constraints: { nullable: false } }
               - column: { name: provider_reference, type: VARCHAR(160) }

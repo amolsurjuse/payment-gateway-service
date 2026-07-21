@@ -1,6 +1,7 @@
 package com.electrahub.paymentgateway.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
 import java.time.Duration;
 
@@ -25,6 +26,7 @@ public record GatewayProperties(
         );
     }
 
+    @ConstructorBinding
     public GatewayProperties {
         routeCacheTtl = routeCacheTtl == null || routeCacheTtl.isNegative() || routeCacheTtl.isZero()
                 ? Duration.ofMinutes(10)
