@@ -1,11 +1,9 @@
 package com.electrahub.paymentgateway.service;
 
-import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayCapability;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationRequest;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationResult;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationStatus;
 import com.electrahub.paymentgateway.domain.GatewayContracts.RouteResolution;
-import com.electrahub.paymentgateway.domain.GatewayContracts.RouteResolutionRequest;
 import com.electrahub.paymentgateway.service.spi.GatewayBusinessException;
 import com.electrahub.paymentgateway.service.spi.GatewayUnavailableException;
 import com.electrahub.paymentgateway.service.spi.PaymentGatewayAdapter;
@@ -21,7 +19,6 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -59,18 +56,10 @@ public class GatewayOperationService {
         }
 
         GatewayRouteCandidate candidate = configurationService.requireRouteCandidate(request.routeId());
-        RouteResolution decision = routePolicy.evaluate(
+        RouteResolution decision = routePolicy.evaluateOperation(
                 candidate.route(),
                 candidate.connection(),
-                new RouteResolutionRequest(
-                        candidate.route().merchantAccountId(),
-                        candidate.route().chargingCountry(),
-                        candidate.route().presentmentCurrency(),
-                        candidate.route().settlementCurrency(),
-                        candidate.route().channel(),
-                        candidate.route().paymentMethod(),
-                        requiredCapability(request.operationType())
-                ),
+                request.operationType(),
                 Instant.now()
         );
         if (!decision.approved()) {
@@ -335,16 +324,6 @@ public class GatewayOperationService {
                 rs.getString("provider_reference"),
                 rs.getInt("recovery_attempt_count")
         );
-    }
-
-    private Set<GatewayCapability> requiredCapability(com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationType type) {
-        return switch (type) {
-            case AUTHORIZE -> Set.of(GatewayCapability.AUTHORIZE);
-            case VOID -> Set.of(GatewayCapability.VOID);
-            case CAPTURE -> Set.of(GatewayCapability.CAPTURE);
-            case REFUND -> Set.of(GatewayCapability.REFUND);
-            case STATUS_QUERY -> Set.of(GatewayCapability.STATUS_QUERY);
-        };
     }
 
     private void rejectRawPaymentData(String reference) {

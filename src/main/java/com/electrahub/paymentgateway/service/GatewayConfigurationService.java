@@ -247,7 +247,7 @@ public class GatewayConfigurationService {
                 INSERT INTO payment_gateway.merchant_payment_account
                     (id, connection_id, enterprise_id, network_id, legal_entity_reference, provider_merchant_reference,
                      merchant_country, settlement_currency, supported_presentment_currencies, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?)
                 """,
                 id,
                 request.connectionId(),
@@ -511,7 +511,8 @@ public class GatewayConfigurationService {
     public List<GatewayRouteCandidate> findCandidates(RouteResolutionRequest request) {
         return jdbcTemplate.query(
                 routeWithConnectionSelect() + """
-                     WHERE r.merchant_account_id = ?
+                     WHERE m.status = 'ACTIVE'
+                       AND r.merchant_account_id = ?
                        AND r.charging_country = ?
                        AND r.presentment_currency = ?
                        AND r.settlement_currency = ?

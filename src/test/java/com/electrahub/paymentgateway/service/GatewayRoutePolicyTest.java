@@ -4,6 +4,7 @@ import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayCapability;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayConnection;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayConnectionStatus;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayEnvironment;
+import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationType;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayProvider;
 import com.electrahub.paymentgateway.domain.GatewayContracts.PaymentChannel;
 import com.electrahub.paymentgateway.domain.GatewayContracts.PaymentMethodType;
@@ -61,6 +62,38 @@ class GatewayRoutePolicyTest {
                 connection,
                 request(Set.of(GatewayCapability.AUTHORIZE)),
                 Instant.now()
+        );
+
+        assertThat(result.approved()).isFalse();
+        assertThat(result.code()).isEqualTo("PAYMENT_ROUTE_DISABLED");
+    }
+
+    @Test
+    void keepsSettlementOperationsAvailableAfterRouteAndConnectionAreDisabled() {
+        RouteResolution result = policy.evaluateOperation(
+                route(false, Set.of(GatewayCapability.AUTHORIZE)),
+                connection(GatewayConnectionStatus.DISABLED, Set.of(
+                        GatewayCapability.AUTHORIZE,
+                        GatewayCapability.CAPTURE,
+                        GatewayCapability.VOID,
+                        GatewayCapability.REFUND,
+                        GatewayCapability.STATUS_QUERY
+                )),
+                GatewayOperationType.CAPTURE,
+                Instant.parse("2026-07-21T12:00:00Z")
+        );
+
+        assertThat(result.approved()).isTrue();
+        assertThat(result.code()).isEqualTo("APPROVED");
+    }
+
+    @Test
+    void stillRejectsNewAuthorizationsAfterRouteIsDisabled() {
+        RouteResolution result = policy.evaluateOperation(
+                route(false, Set.of(GatewayCapability.AUTHORIZE)),
+                connection(GatewayConnectionStatus.DISABLED, Set.of(GatewayCapability.AUTHORIZE)),
+                GatewayOperationType.AUTHORIZE,
+                Instant.parse("2026-07-21T12:00:00Z")
         );
 
         assertThat(result.approved()).isFalse();
