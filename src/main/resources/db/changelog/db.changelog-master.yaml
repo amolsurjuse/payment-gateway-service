@@ -3,3 +3,5 @@ databaseChangeLog:
       file: db/changelog/changes/0001-create-gateway-control-plane.yaml
   - include:
       file: db/changelog/changes/0002-add-gateway-operation-recovery-lease.yaml
+  - include:
+      file: db/changelog/changes/0003-add-merchant-account-configuration-version.yaml

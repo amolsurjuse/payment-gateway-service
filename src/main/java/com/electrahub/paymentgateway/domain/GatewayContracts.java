@@ -4,6 +4,7 @@ import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
@@ -123,6 +124,7 @@ public final class GatewayContracts {
             String settlementCurrency,
             Set<String> supportedPresentmentCurrencies,
             MerchantAccountStatus status,
+            int configurationVersion,
             Instant createdAt,
             Instant updatedAt
     ) {
@@ -170,6 +172,19 @@ public final class GatewayContracts {
         }
     }
 
+    /**
+     * Secret references are write-only. A null value preserves the configured reference; the
+     * public response exposes only whether a reference is configured.
+     */
+    public record UpdateGatewayConnectionRequest(
+            @NotNull @Positive Integer expectedConfigurationVersion,
+            @NotBlank @Size(max = 80) String endpointProfile,
+            @Size(max = 256) String credentialSecretReference,
+            @Size(max = 256) String webhookSecretReference,
+            @Size(max = 256) String certificateSecretReference
+    ) {
+    }
+
     public record CreateMerchantAccountRequest(
             @NotNull UUID connectionId,
             @Size(max = 80) String enterpriseId,
@@ -181,6 +196,22 @@ public final class GatewayContracts {
             Set<@Pattern(regexp = "^[A-Za-z]{3}$") String> supportedPresentmentCurrencies
     ) {
         public CreateMerchantAccountRequest {
+            supportedPresentmentCurrencies = supportedPresentmentCurrencies == null
+                    ? Set.of()
+                    : Set.copyOf(supportedPresentmentCurrencies);
+        }
+    }
+
+    /** Enterprise, network, and gateway binding are immutable after creation to keep settlement scope auditable. */
+    public record UpdateMerchantAccountRequest(
+            @NotNull @Positive Integer expectedConfigurationVersion,
+            @NotBlank @Size(max = 160) String legalEntityReference,
+            @NotBlank @Size(max = 160) String providerMerchantReference,
+            @NotBlank @Pattern(regexp = "^[A-Za-z]{2}$") String merchantCountry,
+            @NotBlank @Pattern(regexp = "^[A-Za-z]{3}$") String settlementCurrency,
+            Set<@Pattern(regexp = "^[A-Za-z]{3}$") String> supportedPresentmentCurrencies
+    ) {
+        public UpdateMerchantAccountRequest {
             supportedPresentmentCurrencies = supportedPresentmentCurrencies == null
                     ? Set.of()
                     : Set.copyOf(supportedPresentmentCurrencies);
@@ -202,6 +233,38 @@ public final class GatewayContracts {
     ) {
         public CreatePaymentRouteRequest {
             requiredCapabilities = requiredCapabilities == null ? Set.of() : Set.copyOf(requiredCapabilities);
+        }
+    }
+
+    /** Routes must be disabled before editing, and are explicitly enabled in a separate action. */
+    public record UpdatePaymentRouteRequest(
+            @NotNull @Positive Integer expectedConfigurationVersion,
+            @NotNull UUID merchantAccountId,
+            @NotBlank @Pattern(regexp = "^[A-Za-z]{2}$") String chargingCountry,
+            @NotBlank @Pattern(regexp = "^[A-Za-z]{3}$") String presentmentCurrency,
+            @NotBlank @Pattern(regexp = "^[A-Za-z]{3}$") String settlementCurrency,
+            @NotNull PaymentChannel channel,
+            @NotNull PaymentMethodType paymentMethod,
+            int priority,
+            Set<GatewayCapability> requiredCapabilities,
+            Instant effectiveFrom,
+            Instant effectiveTo
+    ) {
+        public UpdatePaymentRouteRequest {
+            requiredCapabilities = requiredCapabilities == null ? Set.of() : Set.copyOf(requiredCapabilities);
+        }
+    }
+
+    /** Safe system-administration read model; raw secret references never appear here. */
+    public record GatewayConfigurationSnapshot(
+            java.util.List<GatewayConnection> connections,
+            java.util.List<MerchantAccount> merchantAccounts,
+            java.util.List<PaymentRoute> paymentRoutes
+    ) {
+        public GatewayConfigurationSnapshot {
+            connections = connections == null ? java.util.List.of() : java.util.List.copyOf(connections);
+            merchantAccounts = merchantAccounts == null ? java.util.List.of() : java.util.List.copyOf(merchantAccounts);
+            paymentRoutes = paymentRoutes == null ? java.util.List.of() : java.util.List.copyOf(paymentRoutes);
         }
     }
 

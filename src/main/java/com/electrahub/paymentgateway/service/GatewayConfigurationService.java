@@ -5,6 +5,7 @@ import com.electrahub.paymentgateway.domain.GatewayContracts.CreateGatewayConnec
 import com.electrahub.paymentgateway.domain.GatewayContracts.CreateMerchantAccountRequest;
 import com.electrahub.paymentgateway.domain.GatewayContracts.CreatePaymentRouteRequest;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayCapability;
+import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayConfigurationSnapshot;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayConnection;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayConnectionStatus;
 import com.electrahub.paymentgateway.domain.GatewayContracts.MerchantAccount;
@@ -12,6 +13,9 @@ import com.electrahub.paymentgateway.domain.GatewayContracts.MerchantAccountStat
 import com.electrahub.paymentgateway.domain.GatewayContracts.PaymentRoute;
 import com.electrahub.paymentgateway.domain.GatewayContracts.RouteResolutionRequest;
 import com.electrahub.paymentgateway.domain.GatewayContracts.ScopedRouteResolutionRequest;
+import com.electrahub.paymentgateway.domain.GatewayContracts.UpdateGatewayConnectionRequest;
+import com.electrahub.paymentgateway.domain.GatewayContracts.UpdateMerchantAccountRequest;
+import com.electrahub.paymentgateway.domain.GatewayContracts.UpdatePaymentRouteRequest;
 import com.electrahub.paymentgateway.service.spi.GatewayBusinessException;
 import com.electrahub.paymentgateway.service.spi.GatewayUnavailableException;
 import com.electrahub.paymentgateway.service.spi.PaymentGatewayAdapter;
@@ -63,6 +67,15 @@ public class GatewayConfigurationService {
         return jdbcTemplate.query(connectionSelect() + " ORDER BY created_at DESC", this::mapConnection);
     }
 
+    /**
+     * This is the only read model consumed by the system-administration workspace. It is
+     * intentionally assembled from safe DTOs that contain configuration state but never a
+     * gateway credential, webhook secret, certificate, or vault reference.
+     */
+    public GatewayConfigurationSnapshot configurationSnapshot() {
+        return new GatewayConfigurationSnapshot(listConnections(), listMerchantAccounts(), listPaymentRoutes());
+    }
+
     public GatewayConnection createConnection(CreateGatewayConnectionRequest request, UUID actorId) {
         Instant now = Instant.now();
         UUID id = UUID.randomUUID();
@@ -87,6 +100,55 @@ public class GatewayConfigurationService {
         );
         GatewayConnection saved = requireConnection(id);
         audit(actorId, "GATEWAY_CONNECTION_CREATED", "GATEWAY_CONNECTION", id, null, connectionAudit(saved));
+        routeCache.invalidateAll();
+        return saved;
+    }
+
+    /**
+     * Provider and environment are immutable. Replacing an endpoint profile or a write-only
+     * secret reference invalidates validation, so the connection must be validated and activated
+     * again before it can route a payment.
+     */
+    public GatewayConnection updateConnection(UUID connectionId, UpdateGatewayConnectionRequest request, UUID actorId) {
+        GatewayConnection existing = requireConnection(connectionId);
+        if (existing.status() == GatewayConnectionStatus.ACTIVE
+                || existing.status() == GatewayConnectionStatus.VALIDATING
+                || existing.status() == GatewayConnectionStatus.RETIRED) {
+            throw new GatewayBusinessException(
+                    "GATEWAY_CONNECTION_EDIT_NOT_ALLOWED",
+                    "Disable the gateway connection before editing its configuration."
+            );
+        }
+
+        int updated = jdbcTemplate.update(
+                """
+                UPDATE payment_gateway.gateway_connection
+                   SET endpoint_profile = ?,
+                       credential_secret_reference = COALESCE(?, credential_secret_reference),
+                       webhook_secret_reference = COALESCE(?, webhook_secret_reference),
+                       certificate_secret_reference = COALESCE(?, certificate_secret_reference),
+                       status = 'DRAFT',
+                       validated_at = NULL,
+                       last_health_at = NULL,
+                       last_error_code = NULL,
+                       configuration_version = configuration_version + 1,
+                       updated_at = ?
+                 WHERE id = ?
+                   AND configuration_version = ?
+                """,
+                required(request.endpointProfile(), "endpointProfile", 80),
+                secretReference(request.credentialSecretReference()),
+                secretReference(request.webhookSecretReference()),
+                secretReference(request.certificateSecretReference()),
+                offset(Instant.now()),
+                connectionId,
+                request.expectedConfigurationVersion()
+        );
+        requireUpdated(updated, "GATEWAY_CONNECTION_CONFIGURATION_CONFLICT", "The gateway connection changed before this edit could be saved.");
+
+        GatewayConnection saved = requireConnection(connectionId);
+        audit(actorId, "GATEWAY_CONNECTION_UPDATED", "GATEWAY_CONNECTION", connectionId,
+                connectionAudit(existing), connectionAudit(saved));
         routeCache.invalidateAll();
         return saved;
     }
@@ -207,6 +269,54 @@ public class GatewayConfigurationService {
         return saved;
     }
 
+    /**
+     * Settlement scope and the connected gateway are immutable once an account is created. A
+     * scope change is represented as a new merchant account so historical route and settlement
+     * audit records stay unambiguous.
+     */
+    public MerchantAccount updateMerchantAccount(UUID merchantAccountId, UpdateMerchantAccountRequest request, UUID actorId) {
+        MerchantAccount existing = requireMerchantAccount(merchantAccountId);
+        if (existing.status() == MerchantAccountStatus.ACTIVE || existing.status() == MerchantAccountStatus.RETIRED) {
+            throw new GatewayBusinessException(
+                    "MERCHANT_ACCOUNT_EDIT_NOT_ALLOWED",
+                    "Disable the merchant account before editing its settlement configuration."
+            );
+        }
+
+        Set<String> supportedCurrencies = request.supportedPresentmentCurrencies().isEmpty()
+                ? Set.of(request.settlementCurrency())
+                : request.supportedPresentmentCurrencies();
+        int updated = jdbcTemplate.update(
+                """
+                UPDATE payment_gateway.merchant_payment_account
+                   SET legal_entity_reference = ?,
+                       provider_merchant_reference = ?,
+                       merchant_country = ?,
+                       settlement_currency = ?,
+                       supported_presentment_currencies = ?,
+                       configuration_version = configuration_version + 1,
+                       updated_at = ?
+                 WHERE id = ?
+                   AND configuration_version = ?
+                """,
+                required(request.legalEntityReference(), "legalEntityReference", 160),
+                required(request.providerMerchantReference(), "providerMerchantReference", 160),
+                country(request.merchantCountry()),
+                currency(request.settlementCurrency()),
+                encodeStrings(supportedCurrencies),
+                offset(Instant.now()),
+                merchantAccountId,
+                request.expectedConfigurationVersion()
+        );
+        requireUpdated(updated, "MERCHANT_ACCOUNT_CONFIGURATION_CONFLICT", "The merchant account changed before this edit could be saved.");
+
+        MerchantAccount saved = requireMerchantAccount(merchantAccountId);
+        audit(actorId, "MERCHANT_ACCOUNT_UPDATED", "MERCHANT_ACCOUNT", merchantAccountId,
+                merchantAudit(existing), merchantAudit(saved));
+        routeCache.invalidateAll();
+        return saved;
+    }
+
     public MerchantAccount activateMerchantAccount(UUID merchantAccountId, UUID actorId) {
         MerchantAccount existing = requireMerchantAccount(merchantAccountId);
         GatewayConnection connection = requireConnection(existing.connectionId());
@@ -236,22 +346,16 @@ public class GatewayConfigurationService {
     }
 
     public PaymentRoute createPaymentRoute(CreatePaymentRouteRequest request, UUID actorId) {
-        MerchantAccount merchant = requireMerchantAccount(request.merchantAccountId());
-        GatewayConnection connection = requireConnection(merchant.connectionId());
-        if (connection.status() != GatewayConnectionStatus.ACTIVE || merchant.status() != MerchantAccountStatus.ACTIVE) {
-            throw new GatewayBusinessException("PAYMENT_ROUTE_NOT_CONFIGURED", "An active connection and merchant account are required.");
-        }
-        String settlementCurrency = currency(request.settlementCurrency());
-        if (!merchant.settlementCurrency().equals(settlementCurrency)) {
-            throw new GatewayBusinessException("MERCHANT_SETTLEMENT_CURRENCY_UNSUPPORTED", "Route settlement currency must match the merchant account settlement currency.");
-        }
-        Set<GatewayCapability> capabilities = request.requiredCapabilities() == null ? Set.of() : request.requiredCapabilities();
-        if (!connection.capabilities().containsAll(capabilities)) {
-            throw new GatewayBusinessException("PAYMENT_METHOD_NOT_SUPPORTED", "The connection does not support the requested route capabilities.");
-        }
-        if (request.effectiveFrom() != null && request.effectiveTo() != null && !request.effectiveTo().isAfter(request.effectiveFrom())) {
-            throw new GatewayBusinessException("INVALID_EFFECTIVE_PERIOD", "Route effectiveTo must be after effectiveFrom.");
-        }
+        RouteConfiguration routeConfiguration = validateRouteConfiguration(
+                request.merchantAccountId(),
+                request.settlementCurrency(),
+                request.requiredCapabilities(),
+                request.effectiveFrom(),
+                request.effectiveTo()
+        );
+        MerchantAccount merchant = routeConfiguration.merchant();
+        String settlementCurrency = routeConfiguration.settlementCurrency();
+        Set<GatewayCapability> capabilities = routeConfiguration.capabilities();
         Instant now = Instant.now();
         UUID id = UUID.randomUUID();
         jdbcTemplate.update(
@@ -283,14 +387,74 @@ public class GatewayConfigurationService {
         return saved;
     }
 
+    /** A route can be changed only while disabled; enabling remains a deliberate, separately audited action. */
+    public PaymentRoute updatePaymentRoute(UUID routeId, UpdatePaymentRouteRequest request, UUID actorId) {
+        PaymentRoute existing = requirePaymentRoute(routeId);
+        if (existing.enabled()) {
+            throw new GatewayBusinessException(
+                    "PAYMENT_ROUTE_EDIT_NOT_ALLOWED",
+                    "Disable the payment route before editing its routing configuration."
+            );
+        }
+
+        RouteConfiguration routeConfiguration = validateRouteConfiguration(
+                request.merchantAccountId(),
+                request.settlementCurrency(),
+                request.requiredCapabilities(),
+                request.effectiveFrom(),
+                request.effectiveTo()
+        );
+        int updated = jdbcTemplate.update(
+                """
+                UPDATE payment_gateway.payment_route
+                   SET merchant_account_id = ?,
+                       charging_country = ?,
+                       presentment_currency = ?,
+                       settlement_currency = ?,
+                       channel = ?,
+                       payment_method = ?,
+                       priority = ?,
+                       required_capabilities = ?,
+                       effective_from = ?,
+                       effective_to = ?,
+                       configuration_version = configuration_version + 1,
+                       updated_at = ?
+                 WHERE id = ?
+                   AND configuration_version = ?
+                """,
+                routeConfiguration.merchant().id(),
+                country(request.chargingCountry()),
+                currency(request.presentmentCurrency()),
+                routeConfiguration.settlementCurrency(),
+                request.channel().name(),
+                request.paymentMethod().name(),
+                Math.max(0, request.priority()),
+                encodeCapabilities(routeConfiguration.capabilities()),
+                request.effectiveFrom() == null ? null : offset(request.effectiveFrom()),
+                request.effectiveTo() == null ? null : offset(request.effectiveTo()),
+                offset(Instant.now()),
+                routeId,
+                request.expectedConfigurationVersion()
+        );
+        requireUpdated(updated, "PAYMENT_ROUTE_CONFIGURATION_CONFLICT", "The payment route changed before this edit could be saved.");
+
+        PaymentRoute saved = requirePaymentRoute(routeId);
+        audit(actorId, "PAYMENT_ROUTE_UPDATED", "PAYMENT_ROUTE", routeId,
+                routeAudit(existing), routeAudit(saved));
+        routeCache.invalidateAll();
+        return saved;
+    }
+
     public PaymentRoute setPaymentRouteEnabled(UUID routeId, boolean enabled, UUID actorId) {
         PaymentRoute existing = requirePaymentRoute(routeId);
         if (enabled) {
-            MerchantAccount merchant = requireMerchantAccount(existing.merchantAccountId());
-            GatewayConnection connection = requireConnection(merchant.connectionId());
-            if (merchant.status() != MerchantAccountStatus.ACTIVE || connection.status() != GatewayConnectionStatus.ACTIVE) {
-                throw new GatewayBusinessException("PAYMENT_ROUTE_NOT_CONFIGURED", "An active merchant account and gateway connection are required before enabling a route.");
-            }
+            validateRouteConfiguration(
+                    existing.merchantAccountId(),
+                    existing.settlementCurrency(),
+                    existing.requiredCapabilities(),
+                    existing.effectiveFrom(),
+                    existing.effectiveTo()
+            );
         }
         jdbcTemplate.update(
                 """
@@ -307,6 +471,32 @@ public class GatewayConfigurationService {
                 routeAudit(existing), routeAudit(saved));
         routeCache.invalidateAll();
         return saved;
+    }
+
+    private RouteConfiguration validateRouteConfiguration(
+            UUID merchantAccountId,
+            String requestedSettlementCurrency,
+            Set<GatewayCapability> requestedCapabilities,
+            Instant effectiveFrom,
+            Instant effectiveTo
+    ) {
+        MerchantAccount merchant = requireMerchantAccount(merchantAccountId);
+        GatewayConnection connection = requireConnection(merchant.connectionId());
+        if (connection.status() != GatewayConnectionStatus.ACTIVE || merchant.status() != MerchantAccountStatus.ACTIVE) {
+            throw new GatewayBusinessException("PAYMENT_ROUTE_NOT_CONFIGURED", "An active connection and merchant account are required.");
+        }
+        String settlementCurrency = currency(requestedSettlementCurrency);
+        if (!merchant.settlementCurrency().equals(settlementCurrency)) {
+            throw new GatewayBusinessException("MERCHANT_SETTLEMENT_CURRENCY_UNSUPPORTED", "Route settlement currency must match the merchant account settlement currency.");
+        }
+        Set<GatewayCapability> capabilities = requestedCapabilities == null ? Set.of() : requestedCapabilities;
+        if (!connection.capabilities().containsAll(capabilities)) {
+            throw new GatewayBusinessException("PAYMENT_METHOD_NOT_SUPPORTED", "The connection does not support the requested route capabilities.");
+        }
+        if (effectiveFrom != null && effectiveTo != null && !effectiveTo.isAfter(effectiveFrom)) {
+            throw new GatewayBusinessException("INVALID_EFFECTIVE_PERIOD", "Route effectiveTo must be after effectiveFrom.");
+        }
+        return new RouteConfiguration(merchant, settlementCurrency, capabilities);
     }
 
     public GatewayRouteCandidate requireRouteCandidate(UUID routeId) {
@@ -420,13 +610,19 @@ public class GatewayConfigurationService {
         jdbcTemplate.update(
                 """
                 UPDATE payment_gateway.merchant_payment_account
-                   SET status = ?, updated_at = ?
+                   SET status = ?, configuration_version = configuration_version + 1, updated_at = ?
                  WHERE id = ?
                 """,
                 status.name(),
                 offset(Instant.now()),
                 id
         );
+    }
+
+    private void requireUpdated(int updated, String code, String message) {
+        if (updated == 0) {
+            throw new GatewayBusinessException(code, message);
+        }
     }
 
     private void audit(UUID actorId, String action, String resourceType, UUID resourceId, String before, String after) {
@@ -473,6 +669,7 @@ public class GatewayConfigurationService {
                 rs.getString("settlement_currency"),
                 decodeStrings(rs.getString("supported_presentment_currencies")),
                 MerchantAccountStatus.valueOf(rs.getString("status")),
+                rs.getInt("configuration_version"),
                 instant(rs, "created_at"),
                 instant(rs, "updated_at")
         );
@@ -551,7 +748,8 @@ public class GatewayConfigurationService {
     private String merchantSelect() {
         return """
                 SELECT id, connection_id, enterprise_id, network_id, legal_entity_reference, provider_merchant_reference,
-                       merchant_country, settlement_currency, supported_presentment_currencies, status, created_at, updated_at
+                       merchant_country, settlement_currency, supported_presentment_currencies, status, configuration_version,
+                       created_at, updated_at
                   FROM payment_gateway.merchant_payment_account
                 """;
     }
@@ -686,14 +884,21 @@ public class GatewayConfigurationService {
     }
 
     private String merchantAudit(MerchantAccount value) {
-        return "{\"connectionId\":\"%s\",\"merchantCountry\":\"%s\",\"settlementCurrency\":\"%s\",\"status\":\"%s\"}"
-                .formatted(value.connectionId(), value.merchantCountry(), value.settlementCurrency(), value.status());
+        return "{\"connectionId\":\"%s\",\"merchantCountry\":\"%s\",\"settlementCurrency\":\"%s\",\"status\":\"%s\",\"version\":%d}"
+                .formatted(value.connectionId(), value.merchantCountry(), value.settlementCurrency(), value.status(), value.configurationVersion());
     }
 
     private String routeAudit(PaymentRoute value) {
         return "{\"merchantAccountId\":\"%s\",\"chargingCountry\":\"%s\",\"presentmentCurrency\":\"%s\",\"settlementCurrency\":\"%s\",\"enabled\":%s,\"version\":%d}"
                 .formatted(value.merchantAccountId(), value.chargingCountry(), value.presentmentCurrency(),
                         value.settlementCurrency(), value.enabled(), value.configurationVersion());
+    }
+
+    private record RouteConfiguration(
+            MerchantAccount merchant,
+            String settlementCurrency,
+            Set<GatewayCapability> capabilities
+    ) {
     }
 
 }

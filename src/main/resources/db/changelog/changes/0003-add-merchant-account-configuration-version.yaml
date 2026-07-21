@@ -1,0 +1,15 @@
+databaseChangeLog:
+  - changeSet:
+      id: payment-gateway-0003-merchant-account-configuration-version
+      author: electrahub
+      changes:
+        - addColumn:
+            schemaName: payment_gateway
+            tableName: merchant_payment_account
+            columns:
+              - column:
+                  name: configuration_version
+                  type: INTEGER
+                  defaultValueNumeric: 1
+                  constraints:
+                    nullable: false
