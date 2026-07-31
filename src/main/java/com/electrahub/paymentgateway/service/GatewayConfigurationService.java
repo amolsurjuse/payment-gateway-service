@@ -344,7 +344,7 @@ public class GatewayConfigurationService {
     }
 
     public List<PaymentRoute> listPaymentRoutes() {
-        return jdbcTemplate.query(routeSelect() + " ORDER BY priority ASC, created_at DESC", this::mapPaymentRoute);
+        return jdbcTemplate.query(routeSelect() + " ORDER BY r.priority ASC, r.created_at DESC", this::mapPaymentRoute);
     }
 
     public PaymentRoute createPaymentRoute(CreatePaymentRouteRequest request, UUID actorId) {
@@ -594,7 +594,7 @@ public class GatewayConfigurationService {
 
     private PaymentRoute requirePaymentRoute(UUID id) {
         PaymentRoute route = DataAccessUtils.singleResult(jdbcTemplate.query(
-                routeSelect() + " WHERE id = ?", this::mapPaymentRoute, id));
+                routeSelect() + " WHERE r.id = ?", this::mapPaymentRoute, id));
         if (route == null) {
             throw new GatewayBusinessException("PAYMENT_ROUTE_NOT_CONFIGURED", "Payment route was not found.");
         }
