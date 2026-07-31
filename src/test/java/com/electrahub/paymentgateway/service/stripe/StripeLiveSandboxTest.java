@@ -82,7 +82,7 @@ class StripeLiveSandboxTest {
     ) {
         return new GatewayOperationRequest(
                 UUID.randomUUID(), "integration-payment-intent", null, operationId, idempotencyKey, type,
-                new BigDecimal("1.00"), "USD", "integration-account", paymentMethod, providerReference,
+                new BigDecimal("1.00"), "USD", "integration-account", paymentMethod, null, providerReference,
                 "https://driver-portal.electrahub.net/payments/return", Instant.now()
         );
     }

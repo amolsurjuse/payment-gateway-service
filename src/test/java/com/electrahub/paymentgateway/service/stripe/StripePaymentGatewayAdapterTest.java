@@ -83,7 +83,8 @@ class StripePaymentGatewayAdapterTest {
                 .contains("amount=2510")
                 .contains("currency=usd")
                 .contains("capture_method=manual")
-                .contains("payment_method=pm_card_visa");
+                .contains("payment_method=pm_card_visa")
+                .contains("customer=cus_test");
     }
 
     @Test
@@ -190,7 +191,7 @@ class StripePaymentGatewayAdapterTest {
     private GatewayOperationRequest request(GatewayOperationType type, String paymentMethod, String providerReference) {
         return new GatewayOperationRequest(
                 UUID.randomUUID(), "payment-intent-123", null, "operation-123", "idem-123", type,
-                new BigDecimal("25.10"), "USD", "account-123", paymentMethod, providerReference,
+                new BigDecimal("25.10"), "USD", "account-123", paymentMethod, "cus_test", providerReference,
                 "https://driver.electrahub.net/payments/return", Instant.now()
         );
     }

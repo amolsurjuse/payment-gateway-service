@@ -157,7 +157,7 @@ class TwoC2PPaymentGatewayAdapterTest {
     private GatewayOperationRequest request(GatewayOperationType type) {
         return new GatewayOperationRequest(
                 UUID.randomUUID(), "payment-intent-123", null, "operation-123", "idem-123", type,
-                new BigDecimal("10.00"), "SGD", "account-123", null, "token-demo",
+                new BigDecimal("10.00"), "SGD", "account-123", null, null, "token-demo",
                 "https://driver.electrahub.net/payments/return", Instant.now()
         );
     }

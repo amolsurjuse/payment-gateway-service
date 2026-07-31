@@ -10,13 +10,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
-import java.util.HexFormat;
 import java.util.UUID;
 
 @Service
@@ -38,12 +34,20 @@ public class GatewayPaymentMethodVault {
 
     @Transactional
     public GatewayPaymentMethodRegistration register(RegisterGatewayPaymentMethodRequest request) {
+        return register(request, null);
+    }
+
+    @Transactional
+    public GatewayPaymentMethodRegistration register(
+            RegisterGatewayPaymentMethodRequest request,
+            String providerCustomerReference
+    ) {
         GatewayConnection connection = configurationService.requireConnection(request.connectionId());
         if (connection.status() != GatewayConnectionStatus.ACTIVE) {
             throw new GatewayBusinessException("GATEWAY_CONNECTION_NOT_ACTIVE", "Payment methods require an active gateway connection.");
         }
         String providerToken = validateProviderToken(request.providerToken());
-        String accountHash = hashAccount(request.accountReference());
+        String accountHash = GatewayAccountReferenceHasher.hash(request.accountReference());
         UUID id = UUID.randomUUID();
         Instant createdAt = Instant.now();
         String associatedData = associatedData(id, connection.id(), accountHash);
@@ -52,14 +56,15 @@ public class GatewayPaymentMethodVault {
                 """
                 INSERT INTO payment_gateway.gateway_payment_method
                     (id, connection_id, account_reference_hash, provider_code, provider_token_ciphertext,
-                     brand, last4, expiry_month, expiry_year, active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, ?, ?)
+                     provider_customer_reference, brand, last4, expiry_month, expiry_year, active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, ?, ?)
                 """,
                 id,
                 connection.id(),
                 accountHash,
                 connection.provider().name(),
                 ciphertext,
+                blankToNull(providerCustomerReference),
                 request.brand().trim(),
                 request.last4(),
                 request.expiryMonth(),
@@ -73,18 +78,18 @@ public class GatewayPaymentMethodVault {
         );
     }
 
-    String resolveProviderToken(String reference, String accountReference, GatewayConnection connection) {
+    ResolvedGatewayPaymentMethod resolve(String reference, String accountReference, GatewayConnection connection) {
         UUID paymentMethodId = parseUuid(reference);
         if (paymentMethodId == null) {
-            return reference;
+            return new ResolvedGatewayPaymentMethod(reference, null);
         }
         if (accountReference == null || accountReference.isBlank()) {
             throw new GatewayBusinessException("PAYMENT_METHOD_ACCOUNT_REQUIRED", "Payment method account reference is required.");
         }
-        String accountHash = hashAccount(accountReference);
+        String accountHash = GatewayAccountReferenceHasher.hash(accountReference);
         StoredPaymentMethod stored = DataAccessUtils.singleResult(jdbcTemplate.query(
                 """
-                SELECT id, connection_id, account_reference_hash, provider_token_ciphertext
+                SELECT id, connection_id, account_reference_hash, provider_token_ciphertext, provider_customer_reference
                   FROM payment_gateway.gateway_payment_method
                  WHERE id = ? AND connection_id = ? AND provider_code = ? AND account_reference_hash = ? AND active = TRUE
                 """,
@@ -92,7 +97,8 @@ public class GatewayPaymentMethodVault {
                         rs.getObject("id", UUID.class),
                         rs.getObject("connection_id", UUID.class),
                         rs.getString("account_reference_hash"),
-                        rs.getString("provider_token_ciphertext")
+                        rs.getString("provider_token_ciphertext"),
+                        rs.getString("provider_customer_reference")
                 ),
                 paymentMethodId,
                 connection.id(),
@@ -102,7 +108,10 @@ public class GatewayPaymentMethodVault {
         if (stored == null) {
             throw new GatewayBusinessException("PAYMENT_METHOD_NOT_AVAILABLE", "Payment method is not available for this account and provider.");
         }
-        return tokenCipher.decrypt(stored.ciphertext(), associatedData(stored.id(), stored.connectionId(), stored.accountHash()));
+        return new ResolvedGatewayPaymentMethod(
+                tokenCipher.decrypt(stored.ciphertext(), associatedData(stored.id(), stored.connectionId(), stored.accountHash())),
+                stored.providerCustomerReference()
+        );
     }
 
     private String validateProviderToken(String value) {
@@ -124,27 +133,27 @@ public class GatewayPaymentMethodVault {
         }
     }
 
-    private String hashAccount(String value) {
-        String normalized = value == null ? "" : value.trim();
-        if (normalized.isBlank()) {
-            throw new GatewayBusinessException("PAYMENT_METHOD_ACCOUNT_REQUIRED", "Payment method account reference is required.");
-        }
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
-                    .digest(normalized.getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("SHA-256 is unavailable.", exception);
-        }
-    }
-
     private String associatedData(UUID id, UUID connectionId, String accountHash) {
         return id + ":" + connectionId + ":" + accountHash;
+    }
+
+    private String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     private OffsetDateTime offset(Instant value) {
         return OffsetDateTime.ofInstant(value, ZoneOffset.UTC);
     }
 
-    private record StoredPaymentMethod(UUID id, UUID connectionId, String accountHash, String ciphertext) {
+    record ResolvedGatewayPaymentMethod(String providerToken, String providerCustomerReference) {
+    }
+
+    private record StoredPaymentMethod(
+            UUID id,
+            UUID connectionId,
+            String accountHash,
+            String ciphertext,
+            String providerCustomerReference
+    ) {
     }
 }

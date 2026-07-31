@@ -126,7 +126,7 @@ class AdyenPaymentGatewayAdapterTest {
 
     private GatewayOperationRequest request() {
         return new GatewayOperationRequest(UUID.randomUUID(), "payment-intent-123", null, "operation-123",
-                "idem-123", GatewayOperationType.AUTHORIZE, new BigDecimal("25.00"), "SEK", "account-123", null, null,
+                "idem-123", GatewayOperationType.AUTHORIZE, new BigDecimal("25.00"), "SEK", "account-123", null, null, null,
                 "https://driver.electrahub.net/payments/return", Instant.now());
     }
 }

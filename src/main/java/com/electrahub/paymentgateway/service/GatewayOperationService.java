@@ -175,16 +175,18 @@ public class GatewayOperationService {
                 || request.paymentMethodReference() == null || request.paymentMethodReference().isBlank()) {
             return request;
         }
-        String providerToken = paymentMethodVault.resolveProviderToken(
+        GatewayPaymentMethodVault.ResolvedGatewayPaymentMethod paymentMethod = paymentMethodVault.resolve(
                 request.paymentMethodReference(), request.accountReference(), connection
         );
-        if (providerToken.equals(request.paymentMethodReference())) {
+        if (paymentMethod.providerToken().equals(request.paymentMethodReference())
+                && paymentMethod.providerCustomerReference() == null) {
             return request;
         }
         return new GatewayOperationRequest(
                 request.routeId(), request.paymentIntentId(), request.paymentAttemptId(), request.operationId(),
                 request.idempotencyKey(), request.operationType(), request.amount(), request.currency(),
-                request.accountReference(), providerToken, request.providerReference(), request.returnUrl(), request.requestedAt()
+                request.accountReference(), paymentMethod.providerToken(), paymentMethod.providerCustomerReference(),
+                request.providerReference(), request.returnUrl(), request.requestedAt()
         );
     }
 

@@ -79,7 +79,7 @@ class MockPaymentGatewayAdapterTest {
     private GatewayOperationRequest request(String reference) {
         return new GatewayOperationRequest(
                 UUID.randomUUID(), "pi_123", null, "op_123", "idem_123", GatewayOperationType.AUTHORIZE,
-                new BigDecimal("25.00"), "USD", "account-123", reference, null, "https://driver.example/return", Instant.now()
+                new BigDecimal("25.00"), "USD", "account-123", reference, null, null, "https://driver.example/return", Instant.now()
         );
     }
 }

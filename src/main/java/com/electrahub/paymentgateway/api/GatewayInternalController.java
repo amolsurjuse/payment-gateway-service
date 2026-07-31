@@ -7,10 +7,15 @@ import com.electrahub.paymentgateway.domain.GatewayContracts.RouteResolutionRequ
 import com.electrahub.paymentgateway.domain.GatewayContracts.ScopedRouteResolutionRequest;
 import com.electrahub.paymentgateway.domain.GatewayContracts.RegisterGatewayPaymentMethodRequest;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayPaymentMethodRegistration;
+import com.electrahub.paymentgateway.domain.GatewayContracts.CreateGatewayPaymentMethodEnrollmentRequest;
+import com.electrahub.paymentgateway.domain.GatewayContracts.CompleteGatewayPaymentMethodEnrollmentRequest;
+import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayPaymentMethodEnrollment;
+import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayPaymentMethodEnrollmentCompletion;
 import com.electrahub.paymentgateway.security.InternalServiceAuthenticator;
 import com.electrahub.paymentgateway.service.GatewayOperationService;
 import com.electrahub.paymentgateway.service.PaymentRouteResolver;
 import com.electrahub.paymentgateway.service.GatewayPaymentMethodVault;
+import com.electrahub.paymentgateway.service.PaymentMethodEnrollmentService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -32,17 +37,20 @@ public class GatewayInternalController {
     private final PaymentRouteResolver routeResolver;
     private final GatewayOperationService operationService;
     private final GatewayPaymentMethodVault paymentMethodVault;
+    private final PaymentMethodEnrollmentService enrollmentService;
 
     public GatewayInternalController(
             InternalServiceAuthenticator internalServiceAuthenticator,
             PaymentRouteResolver routeResolver,
             GatewayOperationService operationService,
-            GatewayPaymentMethodVault paymentMethodVault
+            GatewayPaymentMethodVault paymentMethodVault,
+            PaymentMethodEnrollmentService enrollmentService
     ) {
         this.internalServiceAuthenticator = internalServiceAuthenticator;
         this.routeResolver = routeResolver;
         this.operationService = operationService;
         this.paymentMethodVault = paymentMethodVault;
+        this.enrollmentService = enrollmentService;
     }
 
     @PostMapping("/routes/resolve")
@@ -89,6 +97,24 @@ public class GatewayInternalController {
         return result;
     }
 
+    @PostMapping("/payment-method-enrollments")
+    public GatewayPaymentMethodEnrollment startPaymentMethodEnrollment(
+            HttpServletRequest request,
+            @Valid @RequestBody CreateGatewayPaymentMethodEnrollmentRequest payload
+    ) {
+        internalServiceAuthenticator.require(request);
+        return enrollmentService.start(payload);
+    }
+
+    @PostMapping("/payment-method-enrollments/{enrollmentId}/complete")
+    public GatewayPaymentMethodEnrollmentCompletion completePaymentMethodEnrollment(
+            HttpServletRequest request,
+            @PathVariable UUID enrollmentId,
+            @Valid @RequestBody CompleteGatewayPaymentMethodEnrollmentRequest payload
+    ) {
+        internalServiceAuthenticator.require(request);
+        return enrollmentService.complete(enrollmentId, payload);
+    }
     @PostMapping("/payment-methods")
     public GatewayPaymentMethodRegistration registerPaymentMethod(
             HttpServletRequest request,

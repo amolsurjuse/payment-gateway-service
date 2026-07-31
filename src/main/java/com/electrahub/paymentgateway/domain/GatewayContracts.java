@@ -92,6 +92,13 @@ public final class GatewayContracts {
         FAILED
     }
 
+    public enum PaymentMethodEnrollmentStatus {
+        CREATED,
+        SUCCEEDED,
+        FAILED,
+        EXPIRED
+    }
+
     public enum GatewayActionType {
         REDIRECT,
         THREE_DS,
@@ -351,6 +358,7 @@ public final class GatewayContracts {
             @NotBlank @Pattern(regexp = "^[A-Za-z]{3}$") String currency,
             @Size(max = 128) String accountReference,
             @Size(max = 512) String paymentMethodReference,
+            @Size(max = 255) String providerCustomerReference,
             @Size(max = 255) String providerReference,
             @Size(max = 512) String returnUrl,
             Instant requestedAt
@@ -381,6 +389,43 @@ public final class GatewayContracts {
     ) {
     }
 
+    public record CreateGatewayPaymentMethodEnrollmentRequest(
+            @NotBlank @Size(max = 80) String enterpriseId,
+            @NotBlank @Size(max = 80) String networkId,
+            @NotBlank @Pattern(regexp = "^[A-Za-z]{2}$") String chargingCountry,
+            @NotBlank @Pattern(regexp = "^[A-Za-z]{3}$") String currency,
+            @NotBlank @Size(max = 128) String accountReference,
+            @NotBlank @Size(max = 512) String returnUrl
+    ) {
+    }
+
+    public record CompleteGatewayPaymentMethodEnrollmentRequest(
+            @NotBlank @Size(max = 128) String accountReference
+    ) {
+    }
+
+    public record GatewayPaymentMethodEnrollment(
+            UUID id,
+            UUID routeId,
+            UUID connectionId,
+            GatewayProvider provider,
+            GatewayEnvironment environment,
+            PaymentMethodEnrollmentStatus status,
+            String clientSecret,
+            String publishableKey,
+            String currency,
+            Instant expiresAt
+    ) {
+    }
+
+    public record GatewayPaymentMethodEnrollmentCompletion(
+            UUID enrollmentId,
+            UUID routeId,
+            String networkId,
+            PaymentMethodEnrollmentStatus status,
+            GatewayPaymentMethodRegistration paymentMethod
+    ) {
+    }
     /**
      * Provider-neutral customer action. The client secret is an ephemeral, customer-scoped
      * continuation token; provider account credentials are never returned here.

@@ -183,6 +183,9 @@ public class StripePaymentGatewayAdapter implements PaymentGatewayAdapter {
         form.put("amount", Long.toString(CurrencyMinorUnits.toMinorUnits(request.amount(), request.currency())));
         form.put("currency", request.currency().toLowerCase(Locale.ROOT));
         form.put("payment_method", paymentMethod);
+        if (request.providerCustomerReference() != null && !request.providerCustomerReference().isBlank()) {
+            form.put("customer", requireCustomer(request.providerCustomerReference()));
+        }
         form.put("capture_method", "manual");
         form.put("confirm", "true");
         form.put("metadata[electrahub_operation_id]", request.operationId());
@@ -448,6 +451,13 @@ public class StripePaymentGatewayAdapter implements PaymentGatewayAdapter {
     private String requirePaymentMethod(String reference) {
         if (reference == null || reference.isBlank() || !reference.startsWith("pm_")) {
             throw new GatewayBusinessException("STRIPE_PAYMENT_METHOD_REQUIRED", "A Stripe PaymentMethod token is required.");
+        }
+        return reference.trim();
+    }
+
+    private String requireCustomer(String reference) {
+        if (reference == null || !reference.matches("^cus_[A-Za-z0-9_]+$")) {
+            throw new GatewayBusinessException("STRIPE_CUSTOMER_REQUIRED", "A Stripe Customer reference is required.");
         }
         return reference.trim();
     }

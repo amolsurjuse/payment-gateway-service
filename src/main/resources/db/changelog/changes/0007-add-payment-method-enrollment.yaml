@@ -1,0 +1,97 @@
+databaseChangeLog:
+  - changeSet:
+      id: payment-gateway-0007-payment-method-enrollment
+      author: codex
+      changes:
+        - createTable:
+            schemaName: payment_gateway
+            tableName: gateway_provider_customer
+            columns:
+              - column: { name: id, type: UUID, constraints: { primaryKey: true, nullable: false } }
+              - column: { name: connection_id, type: UUID, constraints: { nullable: false } }
+              - column: { name: account_reference_hash, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: provider_code, type: VARCHAR(32), constraints: { nullable: false } }
+              - column: { name: provider_customer_reference, type: VARCHAR(255), constraints: { nullable: false } }
+              - column: { name: active, type: BOOLEAN, defaultValueBoolean: true, constraints: { nullable: false } }
+              - column: { name: created_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+              - column: { name: updated_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+        - addUniqueConstraint:
+            schemaName: payment_gateway
+            tableName: gateway_provider_customer
+            columnNames: connection_id, account_reference_hash
+            constraintName: uk_gateway_provider_customer_account
+        - addForeignKeyConstraint:
+            baseTableSchemaName: payment_gateway
+            baseTableName: gateway_provider_customer
+            baseColumnNames: connection_id
+            referencedTableSchemaName: payment_gateway
+            referencedTableName: gateway_connection
+            referencedColumnNames: id
+            constraintName: fk_gateway_provider_customer_connection
+        - createTable:
+            schemaName: payment_gateway
+            tableName: gateway_payment_method_enrollment
+            columns:
+              - column: { name: id, type: UUID, constraints: { primaryKey: true, nullable: false } }
+              - column: { name: route_id, type: UUID, constraints: { nullable: false } }
+              - column: { name: connection_id, type: UUID, constraints: { nullable: false } }
+              - column: { name: network_id, type: VARCHAR(80), constraints: { nullable: false } }
+              - column: { name: account_reference_hash, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: provider_code, type: VARCHAR(32), constraints: { nullable: false } }
+              - column: { name: provider_enrollment_reference, type: VARCHAR(255), constraints: { nullable: false } }
+              - column: { name: provider_customer_reference, type: VARCHAR(255), constraints: { nullable: false } }
+              - column: { name: gateway_payment_method_id, type: UUID }
+              - column: { name: status, type: VARCHAR(32), constraints: { nullable: false } }
+              - column: { name: currency, type: CHAR(3), constraints: { nullable: false } }
+              - column: { name: expires_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+              - column: { name: completed_at, type: TIMESTAMP WITH TIME ZONE }
+              - column: { name: created_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+              - column: { name: updated_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+        - addUniqueConstraint:
+            schemaName: payment_gateway
+            tableName: gateway_payment_method_enrollment
+            columnNames: provider_code, provider_enrollment_reference
+            constraintName: uk_gateway_enrollment_provider_reference
+        - addForeignKeyConstraint:
+            baseTableSchemaName: payment_gateway
+            baseTableName: gateway_payment_method_enrollment
+            baseColumnNames: route_id
+            referencedTableSchemaName: payment_gateway
+            referencedTableName: payment_route
+            referencedColumnNames: id
+            constraintName: fk_gateway_enrollment_route
+        - addForeignKeyConstraint:
+            baseTableSchemaName: payment_gateway
+            baseTableName: gateway_payment_method_enrollment
+            baseColumnNames: connection_id
+            referencedTableSchemaName: payment_gateway
+            referencedTableName: gateway_connection
+            referencedColumnNames: id
+            constraintName: fk_gateway_enrollment_connection
+        - addForeignKeyConstraint:
+            baseTableSchemaName: payment_gateway
+            baseTableName: gateway_payment_method_enrollment
+            baseColumnNames: gateway_payment_method_id
+            referencedTableSchemaName: payment_gateway
+            referencedTableName: gateway_payment_method
+            referencedColumnNames: id
+            constraintName: fk_gateway_enrollment_payment_method
+        - createIndex:
+            schemaName: payment_gateway
+            tableName: gateway_payment_method_enrollment
+            indexName: idx_gateway_enrollment_account_status
+            columns:
+              - column: { name: account_reference_hash }
+              - column: { name: status }
+              - column: { name: expires_at }
+        - addColumn:
+            schemaName: payment_gateway
+            tableName: gateway_payment_method
+            columns:
+              - column: { name: provider_customer_reference, type: VARCHAR(255) }
+        - sql:
+            sql: ALTER TABLE payment_gateway.gateway_payment_method_enrollment ADD CONSTRAINT ck_gateway_enrollment_status CHECK (status IN ('CREATED','SUCCEEDED','FAILED','EXPIRED'));
+      rollback:
+        - dropColumn: { schemaName: payment_gateway, tableName: gateway_payment_method, columnName: provider_customer_reference }
+        - dropTable: { schemaName: payment_gateway, tableName: gateway_payment_method_enrollment }
+        - dropTable: { schemaName: payment_gateway, tableName: gateway_provider_customer }
