@@ -37,12 +37,30 @@ app:
   gateway:
     route-cache-ttl: ${APP_GATEWAY_ROUTE_CACHE_TTL:10m}
     route-cache-generation-key: ${APP_GATEWAY_ROUTE_CACHE_GENERATION_KEY:payment-gateway:route-cache-generation:v1}
-    mock-provider-enabled: ${APP_GATEWAY_MOCK_PROVIDER_ENABLED:true}
+    mock-provider-enabled: ${APP_GATEWAY_MOCK_PROVIDER_ENABLED:false}
     production-enabled: ${APP_GATEWAY_PRODUCTION_ENABLED:false}
     operation-recovery-fixed-delay: ${APP_GATEWAY_OPERATION_RECOVERY_FIXED_DELAY:60000}
     operation-recovery-lease: ${APP_GATEWAY_OPERATION_RECOVERY_LEASE:45s}
     operation-recovery-initial-backoff: ${APP_GATEWAY_OPERATION_RECOVERY_INITIAL_BACKOFF:30s}
     operation-recovery-max-backoff: ${APP_GATEWAY_OPERATION_RECOVERY_MAX_BACKOFF:30m}
+    token-vault:
+      encryption-key: ${APP_GATEWAY_TOKEN_ENCRYPTION_KEY:}
+    providers:
+      stripe:
+        base-url: ${APP_GATEWAY_STRIPE_BASE_URL:https://api.stripe.com}
+        webhook-tolerance-seconds: ${APP_GATEWAY_STRIPE_WEBHOOK_TOLERANCE_SECONDS:300}
+      razorpay:
+        base-url: ${APP_GATEWAY_RAZORPAY_BASE_URL:https://api.razorpay.com}
+      mollie:
+        base-url: ${APP_GATEWAY_MOLLIE_BASE_URL:https://api.mollie.com}
+        webhook-base-url: ${APP_GATEWAY_MOLLIE_WEBHOOK_BASE_URL:}
+      adyen:
+        test-base-url: ${APP_GATEWAY_ADYEN_TEST_BASE_URL:https://checkout-test.adyen.com/v72}
+      two-c2p:
+        base-url: ${APP_GATEWAY_2C2P_BASE_URL:https://sandbox-pgw.2c2p.com}
+        demo-merchant-id: ${APP_GATEWAY_2C2P_DEMO_MERCHANT_ID:JT01}
+        demo-secret-key: ${APP_GATEWAY_2C2P_DEMO_SECRET_KEY:}
+        webhook-base-url: ${APP_GATEWAY_2C2P_WEBHOOK_BASE_URL:}
 
 management:
   endpoints:

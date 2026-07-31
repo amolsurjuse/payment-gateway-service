@@ -1,0 +1,20 @@
+databaseChangeLog:
+  - changeSet:
+      id: payment-gateway-0004-customer-action
+      author: electrahub
+      changes:
+        - addColumn:
+            schemaName: payment_gateway
+            tableName: gateway_operation
+            columns:
+              - column: { name: action_type, type: VARCHAR(32) }
+              - column: { name: action_url, type: TEXT }
+              - column: { name: action_client_secret, type: TEXT }
+              - column: { name: action_expires_at, type: TIMESTAMP WITH TIME ZONE }
+              - column: { name: action_data, type: TEXT }
+      rollback:
+        - dropColumn: { schemaName: payment_gateway, tableName: gateway_operation, columnName: action_data }
+        - dropColumn: { schemaName: payment_gateway, tableName: gateway_operation, columnName: action_expires_at }
+        - dropColumn: { schemaName: payment_gateway, tableName: gateway_operation, columnName: action_client_secret }
+        - dropColumn: { schemaName: payment_gateway, tableName: gateway_operation, columnName: action_url }
+        - dropColumn: { schemaName: payment_gateway, tableName: gateway_operation, columnName: action_type }

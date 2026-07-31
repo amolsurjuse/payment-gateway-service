@@ -5,15 +5,24 @@ import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationRes
 import com.electrahub.paymentgateway.domain.GatewayContracts.RouteResolution;
 import com.electrahub.paymentgateway.domain.GatewayContracts.RouteResolutionRequest;
 import com.electrahub.paymentgateway.domain.GatewayContracts.ScopedRouteResolutionRequest;
+import com.electrahub.paymentgateway.domain.GatewayContracts.RegisterGatewayPaymentMethodRequest;
+import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayPaymentMethodRegistration;
 import com.electrahub.paymentgateway.security.InternalServiceAuthenticator;
 import com.electrahub.paymentgateway.service.GatewayOperationService;
 import com.electrahub.paymentgateway.service.PaymentRouteResolver;
+import com.electrahub.paymentgateway.service.GatewayPaymentMethodVault;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
+
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/v1/gateway/internal")
@@ -22,15 +31,18 @@ public class GatewayInternalController {
     private final InternalServiceAuthenticator internalServiceAuthenticator;
     private final PaymentRouteResolver routeResolver;
     private final GatewayOperationService operationService;
+    private final GatewayPaymentMethodVault paymentMethodVault;
 
     public GatewayInternalController(
             InternalServiceAuthenticator internalServiceAuthenticator,
             PaymentRouteResolver routeResolver,
-            GatewayOperationService operationService
+            GatewayOperationService operationService,
+            GatewayPaymentMethodVault paymentMethodVault
     ) {
         this.internalServiceAuthenticator = internalServiceAuthenticator;
         this.routeResolver = routeResolver;
         this.operationService = operationService;
+        this.paymentMethodVault = paymentMethodVault;
     }
 
     @PostMapping("/routes/resolve")
@@ -49,5 +61,40 @@ public class GatewayInternalController {
     public GatewayOperationResult execute(HttpServletRequest request, @Valid @RequestBody GatewayOperationRequest payload) {
         internalServiceAuthenticator.require(request);
         return operationService.execute(payload);
+    }
+
+    @GetMapping("/operations/{operationId}")
+    public GatewayOperationResult operation(
+            HttpServletRequest request,
+            @PathVariable UUID operationId
+    ) {
+        internalServiceAuthenticator.require(request);
+        GatewayOperationResult result = operationService.find(operationId);
+        if (result == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Gateway operation not found.");
+        }
+        return result;
+    }
+
+    @PostMapping("/operations/{operationId}/refresh")
+    public GatewayOperationResult refreshOperation(
+            HttpServletRequest request,
+            @PathVariable UUID operationId
+    ) {
+        internalServiceAuthenticator.require(request);
+        GatewayOperationResult result = operationService.refresh(operationId);
+        if (result == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Gateway operation not found.");
+        }
+        return result;
+    }
+
+    @PostMapping("/payment-methods")
+    public GatewayPaymentMethodRegistration registerPaymentMethod(
+            HttpServletRequest request,
+            @Valid @RequestBody RegisterGatewayPaymentMethodRequest payload
+    ) {
+        internalServiceAuthenticator.require(request);
+        return paymentMethodVault.register(payload);
     }
 }

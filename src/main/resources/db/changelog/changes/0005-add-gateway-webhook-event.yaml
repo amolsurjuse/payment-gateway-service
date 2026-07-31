@@ -1,0 +1,54 @@
+databaseChangeLog:
+  - changeSet:
+      id: payment-gateway-0005-webhook-event
+      author: electrahub
+      changes:
+        - createTable:
+            schemaName: payment_gateway
+            tableName: gateway_webhook_event
+            columns:
+              - column: { name: id, type: UUID, constraints: { primaryKey: true, nullable: false } }
+              - column: { name: connection_id, type: UUID, constraints: { nullable: false } }
+              - column: { name: gateway_operation_id, type: UUID }
+              - column: { name: provider_event_id, type: VARCHAR(160), constraints: { nullable: false } }
+              - column: { name: event_type, type: VARCHAR(96), constraints: { nullable: false } }
+              - column: { name: provider_reference, type: VARCHAR(160) }
+              - column: { name: merchant_reference, type: VARCHAR(160) }
+              - column: { name: public_transaction_reference, type: VARCHAR(160) }
+              - column: { name: outcome, type: VARCHAR(32), constraints: { nullable: false } }
+              - column: { name: event_code, type: VARCHAR(96), constraints: { nullable: false } }
+              - column: { name: payload_sha256, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: processing_status, type: VARCHAR(24), constraints: { nullable: false } }
+              - column: { name: occurred_at, type: TIMESTAMP WITH TIME ZONE }
+              - column: { name: received_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+              - column: { name: processed_at, type: TIMESTAMP WITH TIME ZONE }
+        - addForeignKeyConstraint:
+            baseTableSchemaName: payment_gateway
+            baseTableName: gateway_webhook_event
+            baseColumnNames: connection_id
+            referencedTableSchemaName: payment_gateway
+            referencedTableName: gateway_connection
+            referencedColumnNames: id
+            constraintName: fk_gateway_webhook_connection
+        - addForeignKeyConstraint:
+            baseTableSchemaName: payment_gateway
+            baseTableName: gateway_webhook_event
+            baseColumnNames: gateway_operation_id
+            referencedTableSchemaName: payment_gateway
+            referencedTableName: gateway_operation
+            referencedColumnNames: id
+            constraintName: fk_gateway_webhook_operation
+        - addUniqueConstraint:
+            schemaName: payment_gateway
+            tableName: gateway_webhook_event
+            columnNames: connection_id,provider_event_id
+            constraintName: uq_gateway_webhook_provider_event
+        - createIndex:
+            schemaName: payment_gateway
+            tableName: gateway_webhook_event
+            indexName: idx_gateway_webhook_processing
+            columns:
+              - column: { name: processing_status }
+              - column: { name: received_at }
+      rollback:
+        - dropTable: { schemaName: payment_gateway, tableName: gateway_webhook_event }

@@ -192,7 +192,9 @@ public class GatewayConfigurationService {
         if (existing.status() != GatewayConnectionStatus.READY) {
             throw new GatewayBusinessException("GATEWAY_CONNECTION_NOT_READY", "Validate the gateway connection before activation.");
         }
-        if (existing.provider() != GatewayProvider.MOCK && !existing.credentialConfigured()) {
+        PaymentGatewayAdapter adapter = adapterRegistry.find(existing.provider())
+                .orElseThrow(() -> new GatewayBusinessException("ADAPTER_NOT_INSTALLED", "No installed adapter supports this provider."));
+        if (adapter.requiresCredential(existing) && !existing.credentialConfigured()) {
             throw new GatewayBusinessException("GATEWAY_CREDENTIAL_NOT_CONFIGURED", "A credential secret reference is required before activating this provider connection.");
         }
         if (existing.provider() == GatewayProvider.MOCK && existing.environment() == GatewayEnvironment.PRODUCTION) {

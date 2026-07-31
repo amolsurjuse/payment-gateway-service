@@ -1,0 +1,43 @@
+databaseChangeLog:
+  - changeSet:
+      id: payment-gateway-0006-payment-method-vault
+      author: electrahub
+      changes:
+        - createTable:
+            schemaName: payment_gateway
+            tableName: gateway_payment_method
+            columns:
+              - column: { name: id, type: UUID, constraints: { primaryKey: true, nullable: false } }
+              - column: { name: connection_id, type: UUID, constraints: { nullable: false } }
+              - column: { name: account_reference_hash, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: provider_code, type: VARCHAR(32), constraints: { nullable: false } }
+              - column: { name: provider_token_ciphertext, type: TEXT, constraints: { nullable: false } }
+              - column: { name: brand, type: VARCHAR(30), constraints: { nullable: false } }
+              - column: { name: last4, type: CHAR(4), constraints: { nullable: false } }
+              - column: { name: expiry_month, type: SMALLINT, constraints: { nullable: false } }
+              - column: { name: expiry_year, type: SMALLINT, constraints: { nullable: false } }
+              - column: { name: active, type: BOOLEAN, constraints: { nullable: false } }
+              - column: { name: created_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+              - column: { name: updated_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+        - addForeignKeyConstraint:
+            baseTableSchemaName: payment_gateway
+            baseTableName: gateway_payment_method
+            baseColumnNames: connection_id
+            referencedTableSchemaName: payment_gateway
+            referencedTableName: gateway_connection
+            referencedColumnNames: id
+            constraintName: fk_gateway_payment_method_connection
+        - createIndex:
+            schemaName: payment_gateway
+            tableName: gateway_payment_method
+            indexName: idx_gateway_payment_method_account
+            columns:
+              - column: { name: account_reference_hash }
+              - column: { name: connection_id }
+              - column: { name: active }
+        - sql:
+            sql: ALTER TABLE payment_gateway.gateway_payment_method ADD CONSTRAINT ck_gateway_payment_method_expiry_month CHECK (expiry_month BETWEEN 1 AND 12);
+        - sql:
+            sql: ALTER TABLE payment_gateway.gateway_payment_method ADD CONSTRAINT ck_gateway_payment_method_expiry_year CHECK (expiry_year BETWEEN 0 AND 99);
+      rollback:
+        - dropTable: { schemaName: payment_gateway, tableName: gateway_payment_method }

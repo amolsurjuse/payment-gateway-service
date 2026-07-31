@@ -1,6 +1,7 @@
 package com.electrahub.paymentgateway.api.error;
 
 import com.electrahub.paymentgateway.service.spi.GatewayBusinessException;
+import com.electrahub.paymentgateway.service.spi.GatewayWebhookVerificationException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -13,6 +14,12 @@ import java.time.Instant;
 
 @RestControllerAdvice
 public class GatewayExceptionHandler {
+
+    @ExceptionHandler(GatewayWebhookVerificationException.class)
+    public ResponseEntity<ApiError> webhookVerification(GatewayWebhookVerificationException ex) {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .body(new ApiError(ex.code(), ex.getMessage(), Instant.now()));
+    }
 
     @ExceptionHandler(GatewayBusinessException.class)
     public ResponseEntity<ApiError> business(GatewayBusinessException ex) {

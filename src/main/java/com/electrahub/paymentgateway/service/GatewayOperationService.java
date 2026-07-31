@@ -3,7 +3,12 @@ package com.electrahub.paymentgateway.service;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationRequest;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationResult;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationStatus;
+import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayAction;
+import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayActionType;
 import com.electrahub.paymentgateway.domain.GatewayContracts.RouteResolution;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.electrahub.paymentgateway.service.spi.GatewayBusinessException;
 import com.electrahub.paymentgateway.service.spi.GatewayUnavailableException;
 import com.electrahub.paymentgateway.service.spi.PaymentGatewayAdapter;
@@ -19,6 +24,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Service
@@ -29,19 +35,28 @@ public class GatewayOperationService {
     private final GatewayRoutePolicy routePolicy;
     private final PaymentGatewayRegistry adapterRegistry;
     private final GatewayOperationRecoveryPolicy recoveryPolicy;
+    private final ObjectMapper objectMapper;
+    private final GatewayPaymentMethodVault paymentMethodVault;
+    private final ProviderTokenCipher tokenCipher;
 
     public GatewayOperationService(
             JdbcTemplate jdbcTemplate,
             GatewayConfigurationService configurationService,
             GatewayRoutePolicy routePolicy,
             PaymentGatewayRegistry adapterRegistry,
-            GatewayOperationRecoveryPolicy recoveryPolicy
+            GatewayOperationRecoveryPolicy recoveryPolicy,
+            ObjectMapper objectMapper,
+            GatewayPaymentMethodVault paymentMethodVault,
+            ProviderTokenCipher tokenCipher
     ) {
         this.jdbcTemplate = jdbcTemplate;
         this.configurationService = configurationService;
         this.routePolicy = routePolicy;
         this.adapterRegistry = adapterRegistry;
         this.recoveryPolicy = recoveryPolicy;
+        this.objectMapper = objectMapper;
+        this.paymentMethodVault = paymentMethodVault;
+        this.tokenCipher = tokenCipher;
     }
 
     /**
@@ -99,13 +114,15 @@ public class GatewayOperationService {
         PaymentGatewayAdapter adapter = adapterRegistry.find(candidate.connection().provider())
                 .orElseThrow(() -> new GatewayBusinessException("ADAPTER_NOT_INSTALLED", "The payment provider adapter is not installed."));
         try {
-            GatewayOperationResult adapterResult = adapter.execute(request, candidate.connection());
+            GatewayOperationRequest providerRequest = withProviderToken(request, candidate.connection());
+            GatewayOperationResult adapterResult = adapter.execute(providerRequest, candidate.connection());
             GatewayOperationResult persisted = new GatewayOperationResult(
                     gatewayOperationId,
                     adapterResult.status(),
                     adapterResult.code(),
                     adapterResult.providerReference(),
                     adapterResult.publicTransactionReference(),
+                    adapterResult.action(),
                     adapterResult.processedAt()
             );
             persistResult(persisted);
@@ -120,6 +137,7 @@ public class GatewayOperationService {
                     ex.code(),
                     null,
                     null,
+                    null,
                     Instant.now()
             );
             persistResult(pending);
@@ -130,7 +148,7 @@ public class GatewayOperationService {
                     ? GatewayOperationStatus.DECLINED
                     : GatewayOperationStatus.FAILED;
             GatewayOperationResult failed = new GatewayOperationResult(
-                    gatewayOperationId, status, ex.code(), null, null, Instant.now());
+                    gatewayOperationId, status, ex.code(), null, null, null, Instant.now());
             persistResult(failed);
             return failed;
         } catch (RuntimeException ex) {
@@ -143,12 +161,31 @@ public class GatewayOperationService {
                     "PAYMENT_PROVIDER_UNAVAILABLE",
                     null,
                     null,
+                    null,
                     Instant.now()
             );
             persistResult(pending);
             scheduleRecovery(gatewayOperationId, pending.code(), 0, Instant.now(), null);
             return pending;
         }
+    }
+
+    private GatewayOperationRequest withProviderToken(GatewayOperationRequest request, com.electrahub.paymentgateway.domain.GatewayContracts.GatewayConnection connection) {
+        if (request.operationType() != com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationType.AUTHORIZE
+                || request.paymentMethodReference() == null || request.paymentMethodReference().isBlank()) {
+            return request;
+        }
+        String providerToken = paymentMethodVault.resolveProviderToken(
+                request.paymentMethodReference(), request.accountReference(), connection
+        );
+        if (providerToken.equals(request.paymentMethodReference())) {
+            return request;
+        }
+        return new GatewayOperationRequest(
+                request.routeId(), request.paymentIntentId(), request.paymentAttemptId(), request.operationId(),
+                request.idempotencyKey(), request.operationType(), request.amount(), request.currency(),
+                request.accountReference(), providerToken, request.providerReference(), request.returnUrl(), request.requestedAt()
+        );
     }
 
     /**
@@ -189,6 +226,7 @@ public class GatewayOperationService {
                         providerStatus.code(),
                         providerStatus.providerReference(),
                         providerStatus.publicTransactionReference(),
+                        providerStatus.action(),
                         providerStatus.processedAt()
                 );
                 persistResult(finalizedResult);
@@ -209,6 +247,7 @@ public class GatewayOperationService {
                 """
                 UPDATE payment_gateway.gateway_operation
                    SET status = ?, error_code = ?, provider_reference = ?, public_transaction_reference = ?,
+                       action_type = ?, action_url = ?, action_client_secret = ?, action_expires_at = ?, action_data = ?,
                        recovery_lease_until = NULL, next_recovery_at = NULL, last_recovery_error_code = NULL, updated_at = ?
                  WHERE id = ?
                 """,
@@ -218,6 +257,11 @@ public class GatewayOperationService {
                         : result.code(),
                 result.providerReference(),
                 result.publicTransactionReference(),
+                result.action() == null ? null : result.action().type().name(),
+                result.action() == null ? null : result.action().url(),
+                encryptedActionSecret(result),
+                result.action() == null || result.action().expiresAt() == null ? null : offset(result.action().expiresAt()),
+                encodeActionData(result.action()),
                 offset(result.processedAt()),
                 result.gatewayOperationId()
         );
@@ -282,7 +326,8 @@ public class GatewayOperationService {
     private GatewayOperationResult findByIdempotency(String operationType, String idempotencyKey) {
         return DataAccessUtils.singleResult(jdbcTemplate.query(
                 """
-                SELECT id, status, error_code, provider_reference, public_transaction_reference, updated_at
+                SELECT id, status, error_code, provider_reference, public_transaction_reference,
+                       action_type, action_url, action_client_secret, action_expires_at, action_data, updated_at
                   FROM payment_gateway.gateway_operation
                  WHERE operation_type = ? AND idempotency_key = ?
                 """,
@@ -290,6 +335,81 @@ public class GatewayOperationService {
                 operationType,
                 idempotencyKey.trim()
         ));
+    }
+
+    public GatewayOperationResult find(UUID operationId) {
+        return DataAccessUtils.singleResult(jdbcTemplate.query(
+                """
+                SELECT id, status, error_code, provider_reference, public_transaction_reference,
+                       action_type, action_url, action_client_secret, action_expires_at, action_data, updated_at
+                  FROM payment_gateway.gateway_operation
+                 WHERE id = ?
+                """,
+                this::mapOperation,
+                operationId
+        ));
+    }
+
+    /**
+     * Performs a read-only provider inquiry after a customer completes a redirect or SDK action.
+     * The original financial mutation is never replayed.
+     */
+    public GatewayOperationResult refresh(UUID operationId) {
+        GatewayOperationResult existing = find(operationId);
+        if (existing == null || isTerminal(existing.status())) {
+            return existing;
+        }
+        GatewayOperationRecoveryRecord operation = findRecoveryRecord(operationId);
+        if (operation == null || operation.providerReference() == null || operation.providerReference().isBlank()) {
+            return existing;
+        }
+
+        GatewayRouteCandidate candidate = configurationService.requireRouteCandidate(operation.routeId());
+        PaymentGatewayAdapter adapter = adapterRegistry.find(candidate.connection().provider())
+                .orElseThrow(() -> new GatewayBusinessException(
+                        "ADAPTER_NOT_INSTALLED", "The payment provider adapter is not installed."
+                ));
+        GatewayOperationResult providerStatus = adapter.queryStatus(
+                new com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationStatusQuery(
+                        operation.id(), operation.operationId(), operation.idempotencyKey(), operation.providerReference()
+                ),
+                candidate.connection()
+        );
+        GatewayOperationResult refreshed = new GatewayOperationResult(
+                operation.id(),
+                providerStatus.status(),
+                providerStatus.code(),
+                blankToNull(providerStatus.providerReference()) == null
+                        ? existing.providerReference() : providerStatus.providerReference(),
+                blankToNull(providerStatus.publicTransactionReference()) == null
+                        ? existing.publicTransactionReference() : providerStatus.publicTransactionReference(),
+                providerStatus.action() == null && !isTerminal(providerStatus.status())
+                        ? existing.action() : providerStatus.action(),
+                providerStatus.processedAt()
+        );
+        persistResult(refreshed);
+        if (refreshed.status() == GatewayOperationStatus.PENDING_RECONCILIATION) {
+            scheduleRecovery(operation.id(), refreshed.code(), operation.recoveryAttemptCount(), Instant.now(), refreshed.providerReference());
+        }
+        return find(operationId);
+    }
+
+    private GatewayOperationRecoveryRecord findRecoveryRecord(UUID operationId) {
+        return DataAccessUtils.singleResult(jdbcTemplate.query(
+                """
+                SELECT id, route_id, operation_id, idempotency_key, provider_reference, recovery_attempt_count
+                  FROM payment_gateway.gateway_operation
+                 WHERE id = ?
+                """,
+                this::mapRecoveryRecord,
+                operationId
+        ));
+    }
+
+    private boolean isTerminal(GatewayOperationStatus status) {
+        return status == GatewayOperationStatus.SUCCEEDED
+                || status == GatewayOperationStatus.DECLINED
+                || status == GatewayOperationStatus.FAILED;
     }
 
     private GatewayOperationResult mapOperation(ResultSet rs, int rowNum) throws SQLException {
@@ -301,8 +421,60 @@ public class GatewayOperationService {
                 errorCode == null ? defaultCodeForStatus(status) : errorCode,
                 rs.getString("provider_reference"),
                 rs.getString("public_transaction_reference"),
+                mapAction(rs),
                 instant(rs, "updated_at")
         );
+    }
+
+    private GatewayAction mapAction(ResultSet rs) throws SQLException {
+        String actionType = rs.getString("action_type");
+        if (actionType == null || actionType.isBlank()) {
+            return null;
+        }
+        return new GatewayAction(
+                GatewayActionType.valueOf(actionType),
+                rs.getString("action_url"),
+                decryptedActionSecret(rs),
+                instant(rs, "action_expires_at"),
+                decodeActionData(rs.getString("action_data"))
+        );
+    }
+
+    private String encodeActionData(GatewayAction action) {
+        if (action == null || action.data().isEmpty()) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(action.data());
+        } catch (JsonProcessingException exception) {
+            throw new GatewayBusinessException("INVALID_GATEWAY_ACTION", "The provider returned invalid customer action data.");
+        }
+    }
+
+    private String encryptedActionSecret(GatewayOperationResult result) {
+        if (result.action() == null || result.action().clientSecret() == null || !tokenCipher.configured()) {
+            return null;
+        }
+        return tokenCipher.encrypt(result.action().clientSecret(), "gateway-action:" + result.gatewayOperationId());
+    }
+
+    private String decryptedActionSecret(ResultSet rs) throws SQLException {
+        String stored = rs.getString("action_client_secret");
+        if (stored == null || stored.isBlank() || !tokenCipher.configured()) {
+            return null;
+        }
+        return tokenCipher.decrypt(stored, "gateway-action:" + rs.getObject("id", UUID.class));
+    }
+
+    private Map<String, String> decodeActionData(String value) {
+        if (value == null || value.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return objectMapper.readValue(value, new TypeReference<>() { });
+        } catch (JsonProcessingException exception) {
+            return Map.of();
+        }
     }
 
     private String defaultCodeForStatus(GatewayOperationStatus status) {

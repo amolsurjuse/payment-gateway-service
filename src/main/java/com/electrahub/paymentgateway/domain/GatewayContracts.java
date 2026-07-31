@@ -9,6 +9,8 @@ import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.Map;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
@@ -88,6 +90,23 @@ public final class GatewayContracts {
         ACTION_REQUIRED,
         PENDING_RECONCILIATION,
         FAILED
+    }
+
+    public enum GatewayActionType {
+        REDIRECT,
+        THREE_DS,
+        SDK,
+        QR_CODE
+    }
+
+    public enum GatewayWebhookOutcome {
+        AUTHORIZED,
+        CAPTURED,
+        VOIDED,
+        REFUNDED,
+        DECLINED,
+        ACTION_REQUIRED,
+        PENDING
     }
 
     public record GatewayConnection(
@@ -330,9 +349,52 @@ public final class GatewayContracts {
             @NotNull GatewayOperationType operationType,
             @NotNull @DecimalMin(value = "0.00", inclusive = true) BigDecimal amount,
             @NotBlank @Pattern(regexp = "^[A-Za-z]{3}$") String currency,
+            @Size(max = 128) String accountReference,
             @Size(max = 512) String paymentMethodReference,
+            @Size(max = 255) String providerReference,
+            @Size(max = 512) String returnUrl,
             Instant requestedAt
     ) {
+    }
+
+    public record RegisterGatewayPaymentMethodRequest(
+            @NotNull UUID connectionId,
+            @NotBlank @Size(max = 128) String accountReference,
+            @NotBlank @Size(max = 512) String providerToken,
+            @NotBlank @Size(max = 30) String brand,
+            @NotBlank @Pattern(regexp = "^\\d{4}$") String last4,
+            @NotNull @jakarta.validation.constraints.Min(1) @jakarta.validation.constraints.Max(12) Integer expiryMonth,
+            @NotNull @jakarta.validation.constraints.Min(0) @jakarta.validation.constraints.Max(99) Integer expiryYear
+    ) {
+    }
+
+    public record GatewayPaymentMethodRegistration(
+            UUID id,
+            UUID connectionId,
+            GatewayProvider provider,
+            String brand,
+            String last4,
+            int expiryMonth,
+            int expiryYear,
+            boolean active,
+            Instant createdAt
+    ) {
+    }
+
+    /**
+     * Provider-neutral customer action. The client secret is an ephemeral, customer-scoped
+     * continuation token; provider account credentials are never returned here.
+     */
+    public record GatewayAction(
+            @NotNull GatewayActionType type,
+            String url,
+            String clientSecret,
+            Instant expiresAt,
+            Map<String, String> data
+    ) {
+        public GatewayAction {
+            data = data == null ? Map.of() : Map.copyOf(data);
+        }
     }
 
     public record GatewayOperationResult(
@@ -341,6 +403,7 @@ public final class GatewayContracts {
             String code,
             String providerReference,
             String publicTransactionReference,
+            GatewayAction action,
             Instant processedAt
     ) {
     }
@@ -351,6 +414,39 @@ public final class GatewayContracts {
             String idempotencyKey,
             String providerReference
     ) {
+    }
+
+    /** Normalized only after the provider signature has been verified against the raw body. */
+    public record GatewayWebhookEvent(
+            @NotBlank @Size(max = 160) String providerEventId,
+            @NotBlank @Size(max = 96) String eventType,
+            @Size(max = 160) String providerReference,
+            @Size(max = 160) String merchantReference,
+            @Size(max = 160) String publicTransactionReference,
+            @NotNull GatewayWebhookOutcome outcome,
+            @NotBlank @Size(max = 96) String code,
+            Instant occurredAt
+    ) {
+    }
+
+    public record GatewayWebhookReceipt(
+            UUID webhookEventId,
+            boolean duplicate,
+            boolean operationUpdated,
+            String code,
+            Instant receivedAt
+    ) {
+    }
+
+    public record GatewayWebhookBatchReceipt(
+            List<GatewayWebhookReceipt> events,
+            int applied,
+            int duplicates,
+            Instant receivedAt
+    ) {
+        public GatewayWebhookBatchReceipt {
+            events = events == null ? List.of() : List.copyOf(events);
+        }
     }
 
     public record ConnectionValidation(

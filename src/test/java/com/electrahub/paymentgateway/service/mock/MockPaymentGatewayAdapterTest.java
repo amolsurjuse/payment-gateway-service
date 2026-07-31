@@ -10,6 +10,7 @@ import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationSta
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationType;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayProvider;
 import com.electrahub.paymentgateway.service.spi.GatewayUnavailableException;
+import com.electrahub.paymentgateway.service.spi.GatewayBusinessException;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -54,6 +55,19 @@ class MockPaymentGatewayAdapterTest {
         ).status()).isEqualTo(GatewayOperationStatus.PENDING_RECONCILIATION);
     }
 
+    @Test
+    void refusesExecutionWhenMockProviderIsNotExplicitlyEnabled() {
+        MockPaymentGatewayAdapter disabled = new MockPaymentGatewayAdapter(
+                new GatewayProperties(Duration.ofMinutes(10), false, true)
+        );
+
+        assertThatThrownBy(() -> disabled.execute(
+                request("token_mock:approve"), connection(GatewayEnvironment.SANDBOX)
+        ))
+                .isInstanceOf(GatewayBusinessException.class)
+                .hasMessageContaining("disabled");
+    }
+
     private GatewayConnection connection(GatewayEnvironment environment) {
         return new GatewayConnection(
                 UUID.randomUUID(), GatewayProvider.MOCK, environment, GatewayConnectionStatus.READY,
@@ -65,7 +79,7 @@ class MockPaymentGatewayAdapterTest {
     private GatewayOperationRequest request(String reference) {
         return new GatewayOperationRequest(
                 UUID.randomUUID(), "pi_123", null, "op_123", "idem_123", GatewayOperationType.AUTHORIZE,
-                new BigDecimal("25.00"), "USD", reference, Instant.now()
+                new BigDecimal("25.00"), "USD", "account-123", reference, null, "https://driver.example/return", Instant.now()
         );
     }
 }
