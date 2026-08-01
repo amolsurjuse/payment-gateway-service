@@ -80,7 +80,8 @@ class StripePaymentMethodEnrollmentProviderTest {
         assertThat(setupIntentRequest.get())
                 .contains("customer=cus_test")
                 .contains("usage=off_session")
-                .contains("automatic_payment_methods%5Benabled%5D=true")
+                .contains("payment_method_types%5B%5D=card")
+                .doesNotContain("automatic_payment_methods")
                 .doesNotContain("return_url");
         assertThat(result.status()).isEqualTo("succeeded");
         assertThat(result.paymentMethodReference()).isEqualTo("pm_test");

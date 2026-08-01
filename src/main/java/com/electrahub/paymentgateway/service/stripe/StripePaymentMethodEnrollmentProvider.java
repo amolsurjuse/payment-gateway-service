@@ -80,8 +80,7 @@ public class StripePaymentMethodEnrollmentProvider implements PaymentMethodEnrol
         validateConfiguration(connection);
         Map<String, String> form = new LinkedHashMap<>();
         form.put("customer", requireCustomer(providerCustomerReference));
-        form.put("automatic_payment_methods[enabled]", "true");
-        form.put("automatic_payment_methods[allow_redirects]", "always");
+        form.put("payment_method_types[]", "card");
         form.put("usage", "off_session");
         form.put("metadata[electrahub_enrollment_id]", enrollmentId.toString());
 
