@@ -100,6 +100,35 @@ public class TwoC2PPaymentGatewayAdapter implements PaymentGatewayAdapter {
                     "2c2p-v4.3"
             );
         }
+        if (connection.environment() == GatewayEnvironment.SANDBOX) {
+            Map<String, Object> probe = new LinkedHashMap<>();
+            probe.put("merchantID", credentials.merchantId());
+            probe.put("invoiceNo", validationInvoice(connection.id()));
+            probe.put("locale", "en");
+            JsonNode response;
+            try {
+                response = postSigned("/payment/4.3/paymentInquiry", probe, credentials.secretKey(), true);
+            } catch (GatewayBusinessException exception) {
+                return new ConnectionValidation(
+                        false,
+                        "TWO_C2P_CREDENTIAL_REJECTED",
+                        "2C2P did not return a response signed with the configured sandbox key.",
+                        Set.of(),
+                        "2c2p-v4.3"
+                );
+            }
+            String responseMerchantId = response.path("merchantID").asText();
+            if (response.path("respCode").asText().isBlank()
+                    || (!responseMerchantId.isBlank() && !credentials.merchantId().equals(responseMerchantId))) {
+                return new ConnectionValidation(
+                        false,
+                        "TWO_C2P_CREDENTIAL_REJECTED",
+                        "2C2P rejected the configured sandbox merchant or signing key.",
+                        Set.of(),
+                        "2c2p-v4.3"
+                );
+            }
+        }
         return new ConnectionValidation(true, "READY", "2C2P sandbox configuration validated.", CAPABILITIES, "2c2p-v4.3");
     }
 
@@ -112,7 +141,7 @@ public class TwoC2PPaymentGatewayAdapter implements PaymentGatewayAdapter {
                     "The free 2C2P demo supports hosted payment and inquiry; maintenance exchange keys are required for this operation."
             );
         }
-        if (!"SGD".equalsIgnoreCase(request.currency())) {
+        if (isPublicDemo(connection) && !"SGD".equalsIgnoreCase(request.currency())) {
             throw new GatewayBusinessException("TWO_C2P_DEMO_SGD_REQUIRED", "The public Singapore demo accepts SGD only.");
         }
 
@@ -124,11 +153,20 @@ public class TwoC2PPaymentGatewayAdapter implements PaymentGatewayAdapter {
         payload.put("idempotencyID", request.idempotencyKey());
         payload.put("description", "ElectraHub charging payment " + request.paymentIntentId());
         payload.put("amount", request.amount().setScale(2, RoundingMode.UNNECESSARY).toPlainString());
-        payload.put("currencyCode", "SGD");
+        payload.put("currencyCode", request.currency().toUpperCase(Locale.ROOT));
         payload.put("request3DS", "Y");
         payload.put("locale", "en");
+        if (connection.environment() == GatewayEnvironment.SANDBOX && !isPublicDemo(connection)) {
+            payload.put("paymentChannel", java.util.List.of("CC"));
+            payload.put("transactionMode", "PREAUTH");
+        }
         if (request.returnUrl() != null && !request.returnUrl().isBlank()) {
-            payload.put("frontendReturnUrl", request.returnUrl().trim());
+            String returnUrl = request.returnUrl().trim();
+            payload.put("frontendReturnUrl", returnUrl);
+            if (!isPublicDemo(connection) && returnUrl.toLowerCase(Locale.ROOT).startsWith("electrahub://")) {
+                payload.put("schemeReturnUrl", returnUrl);
+                payload.put("appBundleID", "net.electrahub.driverportalios");
+            }
         }
         if (!webhookBaseUrl.isBlank()) {
             payload.put("backendReturnUrl", webhookBaseUrl + "/" + connection.id());
@@ -253,6 +291,15 @@ public class TwoC2PPaymentGatewayAdapter implements PaymentGatewayAdapter {
     }
 
     private JsonNode postSigned(String path, Map<String, Object> payload, String secretKey) {
+        return postSigned(path, payload, secretKey, false);
+    }
+
+    private JsonNode postSigned(
+            String path,
+            Map<String, Object> payload,
+            String secretKey,
+            boolean requireSignedResponse
+    ) {
         String token = jwtCodec.encode(payload, secretKey);
         String requestBody;
         try {
@@ -278,6 +325,12 @@ public class TwoC2PPaymentGatewayAdapter implements PaymentGatewayAdapter {
             throw new GatewayUnavailableException("TWO_C2P_RESPONSE_INVALID", "2C2P returned invalid JSON.");
         }
         String responseToken = outer.path("payload").asText();
+        if (requireSignedResponse && responseToken.isBlank()) {
+            throw new GatewayBusinessException(
+                    "TWO_C2P_RESPONSE_UNSIGNED",
+                    "2C2P did not return the required signed response."
+            );
+        }
         return responseToken.isBlank() ? outer : jwtCodec.decodeAndVerify(responseToken, secretKey);
     }
 
@@ -321,6 +374,13 @@ public class TwoC2PPaymentGatewayAdapter implements PaymentGatewayAdapter {
             normalized = UUID.randomUUID().toString().replace("-", "");
         }
         return normalized.length() <= 50 ? normalized : normalized.substring(0, 50);
+    }
+
+    private String validationInvoice(UUID connectionId) {
+        String suffix = connectionId == null
+                ? UUID.randomUUID().toString().replace("-", "")
+                : connectionId.toString().replace("-", "");
+        return "EHVALIDATE" + suffix.substring(0, Math.min(32, suffix.length()));
     }
 
     private String safeCode(String value) {

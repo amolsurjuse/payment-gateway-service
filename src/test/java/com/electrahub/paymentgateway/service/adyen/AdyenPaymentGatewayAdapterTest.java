@@ -10,6 +10,7 @@ import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayProvider;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayWebhookOutcome;
 import com.electrahub.paymentgateway.service.provider.ProviderHttpTransport;
 import com.electrahub.paymentgateway.service.spi.ProviderCredentialResolver;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -39,13 +40,19 @@ class AdyenPaymentGatewayAdapterTest {
 
     private HttpServer server;
     private AdyenPaymentGatewayAdapter adapter;
+    private ObjectMapper objectMapper;
+    private JsonNode lastSessionRequest;
 
     @BeforeEach
     void setUp() throws IOException {
+        objectMapper = new ObjectMapper();
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/v72/paymentMethods", exchange -> respond(exchange, "{\"paymentMethods\":[]}"));
-        server.createContext("/v72/sessions", exchange -> respond(exchange,
-                "{\"id\":\"CS1234567890\",\"sessionData\":\"encrypted-session-data\",\"expiresAt\":\"2026-08-01T14:00:00Z\"}"));
+        server.createContext("/v72/sessions", exchange -> {
+            lastSessionRequest = objectMapper.readTree(exchange.getRequestBody());
+            respond(exchange,
+                    "{\"id\":\"CS1234567890\",\"sessionData\":\"encrypted-session-data\",\"expiresAt\":\"2026-08-01T14:00:00Z\"}");
+        });
         server.start();
         ProviderCredentialResolver resolver = new ProviderCredentialResolver() {
             @Override
@@ -62,7 +69,7 @@ class AdyenPaymentGatewayAdapterTest {
             }
         };
         adapter = new AdyenPaymentGatewayAdapter(
-                new ProviderHttpTransport(), resolver, new ObjectMapper(),
+                new ProviderHttpTransport(), resolver, objectMapper,
                 "http://127.0.0.1:" + server.getAddress().getPort() + "/v72"
         );
     }
@@ -82,6 +89,95 @@ class AdyenPaymentGatewayAdapterTest {
         assertThat(result.providerReference()).isEqualTo("CS1234567890");
         assertThat(result.action().clientSecret()).isEqualTo("encrypted-session-data");
         assertThat(result.action().data()).containsEntry("clientKey", "test_client_key");
+        assertThat(lastSessionRequest.path("channel").asText()).isEqualTo("Web");
+    }
+
+    @Test
+    void createsIosSessionContextForANativeReturnUrl() {
+        String returnUrl = "electrahub://payment/return";
+
+        var result = adapter.execute(request(returnUrl), connection());
+
+        assertThat(lastSessionRequest.path("channel").asText()).isEqualTo("iOS");
+        assertThat(result.action().data())
+                .containsEntry("amount", "2500")
+                .containsEntry("currency", "SEK")
+                .containsEntry("returnUrl", returnUrl);
+    }
+
+    @Test
+    void rejectsValidationWithoutAResolvedWebhookHmacSecret() {
+        ProviderCredentialResolver resolver = new ProviderCredentialResolver() {
+            @Override
+            public String requireCredential(GatewayConnection connection) {
+                return """
+                        {"apiKey":"AQEtest","merchantAccount":"ElectraHubTest","clientKey":"test_client_key",
+                         "countryCode":"SE","manualCaptureEnabled":true}
+                        """;
+            }
+
+            @Override
+            public Optional<String> webhookSecret(GatewayConnection connection) {
+                return Optional.empty();
+            }
+        };
+        AdyenPaymentGatewayAdapter withoutWebhook = new AdyenPaymentGatewayAdapter(
+                new ProviderHttpTransport(), resolver, new ObjectMapper(),
+                "http://127.0.0.1:" + server.getAddress().getPort() + "/v72"
+        );
+
+        var validation = withoutWebhook.validate(connection());
+
+        assertThat(validation.valid()).isFalse();
+        assertThat(validation.code()).isEqualTo("ADYEN_WEBHOOK_SECRET_REQUIRED");
+    }
+
+    @Test
+    void rejectsValidationWithAMalformedWebhookHmacSecret() {
+        ProviderCredentialResolver resolver = new ProviderCredentialResolver() {
+            @Override
+            public String requireCredential(GatewayConnection connection) {
+                throw new AssertionError("Malformed webhook configuration must fail before provider credentials are used.");
+            }
+
+            @Override
+            public Optional<String> webhookSecret(GatewayConnection connection) {
+                return Optional.of("not-hexadecimal");
+            }
+        };
+        AdyenPaymentGatewayAdapter malformedWebhook = new AdyenPaymentGatewayAdapter(
+                new ProviderHttpTransport(), resolver, new ObjectMapper(),
+                "http://127.0.0.1:" + server.getAddress().getPort() + "/v72"
+        );
+
+        var validation = malformedWebhook.validate(connection());
+
+        assertThat(validation.valid()).isFalse();
+        assertThat(validation.code()).isEqualTo("ADYEN_WEBHOOK_SECRET_REQUIRED");
+    }
+
+    @Test
+    void rejectsValidationWithAShortEvenLengthWebhookHmacSecret() {
+        ProviderCredentialResolver resolver = new ProviderCredentialResolver() {
+            @Override
+            public String requireCredential(GatewayConnection connection) {
+                throw new AssertionError("Short webhook configuration must fail before provider credentials are used.");
+            }
+
+            @Override
+            public Optional<String> webhookSecret(GatewayConnection connection) {
+                return Optional.of("00".repeat(31));
+            }
+        };
+        AdyenPaymentGatewayAdapter shortWebhook = new AdyenPaymentGatewayAdapter(
+                new ProviderHttpTransport(), resolver, new ObjectMapper(),
+                "http://127.0.0.1:" + server.getAddress().getPort() + "/v72"
+        );
+
+        var validation = shortWebhook.validate(connection());
+
+        assertThat(validation.valid()).isFalse();
+        assertThat(validation.code()).isEqualTo("ADYEN_WEBHOOK_SECRET_REQUIRED");
     }
 
     @Test
@@ -125,8 +221,12 @@ class AdyenPaymentGatewayAdapterTest {
     }
 
     private GatewayOperationRequest request() {
+        return request("https://driver.electrahub.net/payments/return");
+    }
+
+    private GatewayOperationRequest request(String returnUrl) {
         return new GatewayOperationRequest(UUID.randomUUID(), "payment-intent-123", null, "operation-123",
                 "idem-123", GatewayOperationType.AUTHORIZE, new BigDecimal("25.00"), "SEK", "account-123", null, null, null,
-                "https://driver.electrahub.net/payments/return", Instant.now());
+                returnUrl, Instant.now());
     }
 }

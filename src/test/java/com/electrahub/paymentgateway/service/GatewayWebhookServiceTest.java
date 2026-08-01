@@ -4,6 +4,7 @@ import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayConnection;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayConnectionStatus;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayEnvironment;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayProvider;
+import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationStatus;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayWebhookEvent;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayWebhookOutcome;
 import com.electrahub.paymentgateway.service.spi.GatewayBusinessException;
@@ -21,11 +22,18 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class GatewayWebhookServiceTest {
+
+    @Test
+    void treatsAnAutomaticRefundAsConfirmationOfAVoid() {
+        assertThat(GatewayWebhookService.targetStatus("VOID", GatewayWebhookOutcome.REFUNDED))
+                .isEqualTo(GatewayOperationStatus.SUCCEEDED);
+    }
 
     @Test
     void rejectsOversizedPayloadBeforeLookingUpAConnection() {

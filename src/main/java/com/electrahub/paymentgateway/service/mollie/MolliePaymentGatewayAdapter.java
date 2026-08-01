@@ -10,6 +10,7 @@ import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationReq
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationResult;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationStatus;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationStatusQuery;
+import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationType;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayProvider;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayWebhookEvent;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayWebhookOutcome;
@@ -93,6 +94,14 @@ public class MolliePaymentGatewayAdapter implements PaymentGatewayAdapter {
     @Override
     public GatewayOperationResult execute(GatewayOperationRequest request, GatewayConnection connection) {
         validateProfile(connection);
+        if (connection.environment() == GatewayEnvironment.SANDBOX
+                && request.operationType() != GatewayOperationType.STATUS_QUERY
+                && !"EUR".equalsIgnoreCase(request.currency())) {
+            throw new GatewayBusinessException(
+                    "MOLLIE_SANDBOX_EUR_REQUIRED",
+                    "Mollie test-mode payment mutations require EUR."
+            );
+        }
         return switch (request.operationType()) {
             case AUTHORIZE -> authorize(request, connection);
             case CAPTURE -> capture(request, connection);
@@ -106,9 +115,36 @@ public class MolliePaymentGatewayAdapter implements PaymentGatewayAdapter {
     @Override
     public GatewayOperationResult queryStatus(GatewayOperationStatusQuery query, GatewayConnection connection) {
         String paymentId = paymentId(query.providerReference());
+        if (query.operationType() == GatewayOperationType.CAPTURE) {
+            String captureId = childReference(query.publicTransactionReference(), "cpt_", "MOLLIE_CAPTURE_REFERENCE_PENDING");
+            if (captureId == null) {
+                return operationResult(query.gatewayOperationId(), GatewayOperationStatus.PENDING_RECONCILIATION,
+                        "MOLLIE_CAPTURE_REFERENCE_PENDING", paymentId, query.publicTransactionReference());
+            }
+            JsonNode capture = requireSuccessful(transport.get(
+                    uri("/v2/payments/" + path(paymentId) + "/captures/" + path(captureId)),
+                    authorization(apiKey(connection))
+            ));
+            return captureResult(query.gatewayOperationId(), paymentId, capture);
+        }
+        if (query.operationType() == GatewayOperationType.REFUND) {
+            String refundId = childReference(query.publicTransactionReference(), "re_", "MOLLIE_REFUND_REFERENCE_PENDING");
+            if (refundId == null) {
+                return operationResult(query.gatewayOperationId(), GatewayOperationStatus.PENDING_RECONCILIATION,
+                        "MOLLIE_REFUND_REFERENCE_PENDING", paymentId, query.publicTransactionReference());
+            }
+            JsonNode refund = requireSuccessful(transport.get(
+                    uri("/v2/payments/" + path(paymentId) + "/refunds/" + path(refundId)),
+                    authorization(apiKey(connection))
+            ));
+            return refundResult(query.gatewayOperationId(), paymentId, refund);
+        }
         JsonNode payment = requireSuccessful(transport.get(
                 uri("/v2/payments/" + path(paymentId)), authorization(apiKey(connection))
         ));
+        if (query.operationType() == GatewayOperationType.VOID) {
+            return voidResult(query.gatewayOperationId(), paymentId, payment);
+        }
         return paymentResult(query.gatewayOperationId(), payment);
     }
 
@@ -164,7 +200,7 @@ public class MolliePaymentGatewayAdapter implements PaymentGatewayAdapter {
                 "electrahub_operation_id", request.operationId()
         ));
         JsonNode payment = requireSuccessful(transport.postJson(
-                uri("/v2/payments"), authorization(apiKey(connection)), json(body)
+                uri("/v2/payments"), mutationAuthorization(apiKey(connection), request.idempotencyKey()), json(body)
         ));
         String checkoutUrl = payment.path("_links").path("checkout").path("href").asText(null);
         String paymentId = payment.path("id").asText();
@@ -195,36 +231,75 @@ public class MolliePaymentGatewayAdapter implements PaymentGatewayAdapter {
                 "description", bounded("ElectraHub capture " + request.operationId(), 255)
         );
         JsonNode capture = requireSuccessful(transport.postJson(
-                uri("/v2/payments/" + path(paymentId) + "/captures"), authorization(apiKey(connection)), json(body)
+                uri("/v2/payments/" + path(paymentId) + "/captures"),
+                mutationAuthorization(apiKey(connection), request.idempotencyKey()),
+                json(body)
         ));
-        String status = capture.path("status").asText("pending");
-        GatewayOperationStatus gatewayStatus = "succeeded".equals(status)
-                ? GatewayOperationStatus.SUCCEEDED : GatewayOperationStatus.PENDING_RECONCILIATION;
-        return result(gatewayStatus, paymentId, capture.path("id").asText(paymentId));
+        return captureResult(null, paymentId, capture);
     }
 
     private GatewayOperationResult cancel(GatewayOperationRequest request, GatewayConnection connection) {
         String paymentId = paymentId(request.providerReference());
-        ProviderHttpTransport.Response response = transport.delete(
-                uri("/v2/payments/" + path(paymentId)), authorization(apiKey(connection))
+        ProviderHttpTransport.Response response = transport.postJson(
+                uri("/v2/payments/" + path(paymentId) + "/release-authorization"),
+                mutationAuthorization(apiKey(connection), request.idempotencyKey()),
+                "{}"
         );
         if (!response.successful()) {
             requireSuccessful(response);
         }
-        return result(GatewayOperationStatus.SUCCEEDED, paymentId, paymentId);
+        GatewayOperationStatus status = response.statusCode() == 202
+                ? GatewayOperationStatus.PENDING_RECONCILIATION
+                : GatewayOperationStatus.SUCCEEDED;
+        return operationResult(null, status,
+                status == GatewayOperationStatus.SUCCEEDED ? "APPROVED" : "MOLLIE_RELEASE_PENDING",
+                paymentId, paymentId);
     }
 
     private GatewayOperationResult refund(GatewayOperationRequest request, GatewayConnection connection) {
         String paymentId = paymentId(request.providerReference());
         JsonNode refund = requireSuccessful(transport.postJson(
                 uri("/v2/payments/" + path(paymentId) + "/refunds"),
-                authorization(apiKey(connection)),
+                mutationAuthorization(apiKey(connection), request.idempotencyKey()),
                 json(Map.of("amount", amount(request), "description", bounded("ElectraHub refund " + request.operationId(), 255)))
         ));
+        return refundResult(null, paymentId, refund);
+    }
+
+    private GatewayOperationResult captureResult(UUID operationId, String paymentId, JsonNode capture) {
+        String status = capture.path("status").asText("pending");
+        GatewayOperationStatus gatewayStatus = switch (status) {
+            case "succeeded" -> GatewayOperationStatus.SUCCEEDED;
+            case "failed" -> GatewayOperationStatus.FAILED;
+            default -> GatewayOperationStatus.PENDING_RECONCILIATION;
+        };
+        String captureId = requiredChildReference(capture.path("id").asText(), "cpt_", "MOLLIE_CAPTURE_RESPONSE_INVALID");
+        String code = gatewayStatus == GatewayOperationStatus.FAILED ? "MOLLIE_CAPTURE_FAILED" : code(gatewayStatus);
+        return operationResult(operationId, gatewayStatus, code, paymentId, captureId);
+    }
+
+    private GatewayOperationResult refundResult(UUID operationId, String paymentId, JsonNode refund) {
         String status = refund.path("status").asText("queued");
-        GatewayOperationStatus gatewayStatus = "refunded".equals(status)
-                ? GatewayOperationStatus.SUCCEEDED : GatewayOperationStatus.PENDING_RECONCILIATION;
-        return result(gatewayStatus, paymentId, refund.path("id").asText(paymentId));
+        GatewayOperationStatus gatewayStatus = switch (status) {
+            case "refunded" -> GatewayOperationStatus.SUCCEEDED;
+            case "failed", "canceled" -> GatewayOperationStatus.FAILED;
+            default -> GatewayOperationStatus.PENDING_RECONCILIATION;
+        };
+        String refundId = requiredChildReference(refund.path("id").asText(), "re_", "MOLLIE_REFUND_RESPONSE_INVALID");
+        String code = gatewayStatus == GatewayOperationStatus.FAILED ? "MOLLIE_REFUND_FAILED" : code(gatewayStatus);
+        return operationResult(operationId, gatewayStatus, code, paymentId, refundId);
+    }
+
+    private GatewayOperationResult voidResult(UUID operationId, String paymentId, JsonNode payment) {
+        String status = payment.path("status").asText("open");
+        GatewayOperationStatus gatewayStatus = switch (status) {
+            case "canceled", "expired" -> GatewayOperationStatus.SUCCEEDED;
+            case "paid", "failed" -> GatewayOperationStatus.FAILED;
+            default -> GatewayOperationStatus.PENDING_RECONCILIATION;
+        };
+        String code = gatewayStatus == GatewayOperationStatus.SUCCEEDED ? "APPROVED"
+                : gatewayStatus == GatewayOperationStatus.FAILED ? "MOLLIE_RELEASE_FAILED" : "MOLLIE_RELEASE_PENDING";
+        return operationResult(operationId, gatewayStatus, code, paymentId, paymentId);
     }
 
     private GatewayOperationResult paymentResult(UUID operationId, JsonNode payment) {
@@ -247,7 +322,18 @@ public class MolliePaymentGatewayAdapter implements PaymentGatewayAdapter {
     }
 
     private GatewayOperationResult result(GatewayOperationStatus status, String providerReference, String publicReference) {
-        return new GatewayOperationResult(UUID.randomUUID(), status, code(status), providerReference, publicReference, null, Instant.now());
+        return operationResult(null, status, code(status), providerReference, publicReference);
+    }
+
+    private GatewayOperationResult operationResult(
+            UUID operationId,
+            GatewayOperationStatus status,
+            String resultCode,
+            String providerReference,
+            String publicReference
+    ) {
+        return new GatewayOperationResult(operationId == null ? UUID.randomUUID() : operationId, status, resultCode,
+                providerReference, publicReference, null, Instant.now());
     }
 
     private Map<String, String> amount(GatewayOperationRequest request) {
@@ -287,6 +373,15 @@ public class MolliePaymentGatewayAdapter implements PaymentGatewayAdapter {
 
     private Map<String, String> authorization(String apiKey) {
         return Map.of("Authorization", "Bearer " + apiKey, "Accept", "application/json");
+    }
+
+    private Map<String, String> mutationAuthorization(String apiKey, String idempotencyKey) {
+        Map<String, String> headers = new LinkedHashMap<>(authorization(apiKey));
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            throw new GatewayBusinessException("MOLLIE_IDEMPOTENCY_KEY_REQUIRED", "Mollie mutations require an idempotency key.");
+        }
+        headers.put("Idempotency-Key", idempotencyKey.trim());
+        return Map.copyOf(headers);
     }
 
     private JsonNode requireSuccessful(ProviderHttpTransport.Response response) {
@@ -367,6 +462,24 @@ public class MolliePaymentGatewayAdapter implements PaymentGatewayAdapter {
             throw new GatewayBusinessException("MOLLIE_PAYMENT_REFERENCE_REQUIRED", "A Mollie payment reference is required.");
         }
         return value;
+    }
+
+    private String childReference(String value, String prefix, String pendingCode) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        if (!value.startsWith(prefix) || !value.matches("^[A-Za-z0-9_]+$")) {
+            throw new GatewayBusinessException(pendingCode, "The Mollie child operation reference is invalid.");
+        }
+        return value;
+    }
+
+    private String requiredChildReference(String value, String prefix, String code) {
+        String reference = childReference(value, prefix, code);
+        if (reference == null) {
+            throw new GatewayUnavailableException(code, "Mollie did not return the child operation reference.");
+        }
+        return reference;
     }
 
     private String path(String value) {

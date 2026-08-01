@@ -7,8 +7,8 @@ Provider-neutral routing, encrypted payment-method tokens, durable financial ope
 | Region | Provider | Available without legal onboarding | Adapter state |
 |---|---|---|---|
 | US, Canada, UK | Stripe | Anonymous, expiring developer sandbox | Authorize, partial/full capture, void, refund, inquiry, 3DS action, signed webhooks |
-| Singapore | 2C2P | Documentation sample only; the published `JT01` key is currently rejected by the sandbox | Hosted SGD checkout, inquiry, signed backend response after 2C2P issues a working key |
-| India | Razorpay | Code only; test keys require an account login | Order checkout, authorize webhook, capture, refund, inquiry |
+| Singapore | 2C2P | Documentation sample only; the published `JT01` key is currently rejected by the sandbox | Signed sandbox validation/inquiry and hosted checkout; private sandboxes request card-only `PREAUTH` |
+| India | Razorpay | Code only; test keys require an account login | Order checkout, authorize webhook, capture, idempotent refund, inquiry, automatic authorization release tracking |
 | Netherlands, Germany | Mollie | Code only; test key requires an eligible account | Hosted manual authorization, capture, void, refund, authenticated webhook re-fetch |
 | Sweden and EU fallback | Adyen | Code only; test account approval is required | Checkout session, capture, cancel, refund, batched HMAC webhooks |
 
@@ -21,7 +21,7 @@ The 2C2P public demo does not expose the exchange keys needed for maintenance op
 - Webhook signatures are verified before insertion. Mollie callbacks are verified by fetching the referenced payment with the configured API key.
 - Webhook payloads are not stored; only normalized fields and a SHA-256 payload hash are retained.
 - Provider event IDs are unique per connection, and terminal operations cannot be downgraded by delayed events.
-- Provider credentials and webhook secrets are write-only environment references. They are never returned by the admin API.
+- Provider credentials and webhook secrets are write-only environment references. Server-side policy accepts only the canonical environment variable for that provider and purpose, and they are never returned by the admin API.
 - Production provider activation and payment-service execution are disabled by default.
 
 ## Runtime secrets
@@ -42,6 +42,11 @@ kubectl -n dev create secret generic payment-gateway-provider-dev `
   --from-literal=APP_GATEWAY_STRIPE_CREDENTIAL='<test-secret-key>' `
   --from-literal=APP_GATEWAY_STRIPE_WEBHOOK_SECRET='<whsec-value>' `
   --from-literal=APP_GATEWAY_MOLLIE_CREDENTIAL='<test-api-key>' `
+  --from-literal=APP_GATEWAY_RAZORPAY_CREDENTIAL='<test-key-json>' `
+  --from-literal=APP_GATEWAY_RAZORPAY_WEBHOOK_SECRET='<webhook-secret>' `
+  --from-literal=APP_GATEWAY_ADYEN_CREDENTIAL='<test-credential-json>' `
+  --from-literal=APP_GATEWAY_ADYEN_WEBHOOK_SECRET='<hex-hmac-key>' `
+  --from-literal=APP_GATEWAY_2C2P_CREDENTIAL='<private-sandbox-credential-json>' `
   --from-literal=APP_GATEWAY_2C2P_DEMO_SECRET_KEY='<published-demo-signing-key>' `
   --dry-run=client -o yaml | kubectl apply -f -
 ```
@@ -51,6 +56,9 @@ Use these write-only references when creating a gateway connection:
 - Stripe credential: `env:APP_GATEWAY_STRIPE_CREDENTIAL`
 - Stripe webhook: `env:APP_GATEWAY_STRIPE_WEBHOOK_SECRET`
 - Mollie credential: `env:APP_GATEWAY_MOLLIE_CREDENTIAL`
+- Razorpay credential and webhook: `env:APP_GATEWAY_RAZORPAY_CREDENTIAL`, `env:APP_GATEWAY_RAZORPAY_WEBHOOK_SECRET`
+- Adyen credential and webhook: `env:APP_GATEWAY_ADYEN_CREDENTIAL`, `env:APP_GATEWAY_ADYEN_WEBHOOK_SECRET`
+- 2C2P private sandbox credential: `env:APP_GATEWAY_2C2P_CREDENTIAL`
 - 2C2P public demo: leave the connection credential reference blank; the adapter reads `APP_GATEWAY_2C2P_DEMO_SECRET_KEY` only for endpoint profile `2c2p-sandbox-sg-demo`.
 
 Provider credential value formats:
@@ -67,12 +75,12 @@ Adyen's webhook secret is the hex HMAC key. Razorpay and Stripe use the webhook 
 
 ## Activation order
 
-1. Create a sandbox connection with the matching endpoint profile (`stripe-sandbox`, `mollie-sandbox`, `razorpay-sandbox`, `adyen-sandbox`, or `2c2p-sandbox-sg-demo`).
+1. Create a sandbox connection with the matching endpoint profile (`stripe-sandbox`, `mollie-sandbox`, `razorpay-sandbox`, `adyen-sandbox`, `2c2p-sandbox`, or `2c2p-sandbox-sg-demo`).
 2. Validate and activate the connection.
 3. Create and activate the merchant account.
 4. Create the payment route disabled, then enable it in a separately audited action.
-5. For a `CARD_ON_FILE` route, configure the token-vault secret, tokenize in the provider UI/SDK, and register through payment-service `POST /api/v1/payment/cards/tokenized`.
-6. For the Mollie `HOSTED_CHECKOUT` route, send `gatewayPaymentFlow=HOSTED_CHECKOUT`, omit `paymentMethodReference`, and provide an `electrahub://` URL or an HTTPS return URL on `electrahub.net`. Mollie checkout is restricted to credit cards with manual capture so authorization and settlement remain separate.
+5. For a Stripe `CARD_ON_FILE` route, configure the token-vault secret, tokenize in the provider UI/SDK, and register through payment-service `POST /api/v1/payment/cards/tokenized`.
+6. Mollie, Razorpay, and Adyen use `HOSTED_CHECKOUT`: send `gatewayPaymentFlow=HOSTED_CHECKOUT`, omit `paymentMethodReference`, and provide an `electrahub://` URL or an HTTPS return URL on `electrahub.net`. All three routes require authorize, manual-capture, and capture capabilities. Keep 2C2P routes disabled because its RSA maintenance exchange is not implemented.
 7. Add one network to `PAYMENT_GATEWAY_EXECUTION_PILOT_NETWORK_IDS`.
 8. Set `PAYMENT_GATEWAY_EXECUTION_ENABLED=true` only in the sandbox environment.
 9. Exercise authorize, customer action, capture/void, webhook, and reconciliation flows.

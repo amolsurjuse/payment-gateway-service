@@ -193,7 +193,7 @@ public class GatewayWebhookService {
         return updated == 1;
     }
 
-    private GatewayOperationStatus targetStatus(String operationType, GatewayWebhookOutcome outcome) {
+    static GatewayOperationStatus targetStatus(String operationType, GatewayWebhookOutcome outcome) {
         return switch (outcome) {
             case AUTHORIZED -> "AUTHORIZE".equals(operationType)
                     ? GatewayOperationStatus.SUCCEEDED : GatewayOperationStatus.PENDING_RECONCILIATION;
@@ -201,7 +201,7 @@ public class GatewayWebhookService {
                     ? GatewayOperationStatus.SUCCEEDED : GatewayOperationStatus.PENDING_RECONCILIATION;
             case VOIDED -> "VOID".equals(operationType)
                     ? GatewayOperationStatus.SUCCEEDED : GatewayOperationStatus.FAILED;
-            case REFUNDED -> "REFUND".equals(operationType)
+            case REFUNDED -> ("REFUND".equals(operationType) || "VOID".equals(operationType))
                     ? GatewayOperationStatus.SUCCEEDED : GatewayOperationStatus.PENDING_RECONCILIATION;
             case DECLINED -> GatewayOperationStatus.DECLINED;
             case ACTION_REQUIRED -> GatewayOperationStatus.ACTION_REQUIRED;

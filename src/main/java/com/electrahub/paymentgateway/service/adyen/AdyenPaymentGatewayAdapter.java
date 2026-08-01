@@ -81,6 +81,18 @@ public class AdyenPaymentGatewayAdapter implements PaymentGatewayAdapter {
     @Override
     public ConnectionValidation validate(GatewayConnection connection) {
         validateProfile(connection);
+        String webhookSecret = credentialResolver.webhookSecret(connection)
+                .filter(value -> !value.isBlank())
+                .orElse(null);
+        if (!validHmacKey(webhookSecret)) {
+            return new ConnectionValidation(
+                    false,
+                    "ADYEN_WEBHOOK_SECRET_REQUIRED",
+                    "A valid hexadecimal Adyen webhook HMAC secret is required because payment results are webhook-driven.",
+                    Set.of(),
+                    "adyen-checkout-v72"
+            );
+        }
         Credentials credentials = credentials(connection);
         if (!credentials.manualCaptureEnabled()) {
             return new ConnectionValidation(
@@ -108,6 +120,18 @@ public class AdyenPaymentGatewayAdapter implements PaymentGatewayAdapter {
             throw unavailable(response.statusCode());
         }
         return new ConnectionValidation(true, "READY", "Adyen connection validated.", CAPABILITIES, "adyen-checkout-v72");
+    }
+
+    private boolean validHmacKey(String value) {
+        if (value == null || value.length() != 64) {
+            return false;
+        }
+        try {
+            HexFormat.of().parseHex(value);
+            return true;
+        } catch (IllegalArgumentException exception) {
+            return false;
+        }
     }
 
     @Override
@@ -188,14 +212,16 @@ public class AdyenPaymentGatewayAdapter implements PaymentGatewayAdapter {
         if (request.returnUrl() == null || request.returnUrl().isBlank()) {
             throw new GatewayBusinessException("ADYEN_RETURN_URL_REQUIRED", "Adyen checkout requires a return URL.");
         }
+        String returnUrl = request.returnUrl().trim();
+        boolean nativeIosReturn = returnUrl.toLowerCase(Locale.ROOT).startsWith("electrahub://");
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("merchantAccount", credentials.merchantAccount());
         body.put("amount", amount(request));
         body.put("reference", bounded(request.operationId(), 80));
-        body.put("returnUrl", request.returnUrl().trim());
+        body.put("returnUrl", returnUrl);
         body.put("countryCode", credentials.countryCode());
         body.put("shopperLocale", locale(credentials.countryCode()));
-        body.put("channel", "Web");
+        body.put("channel", nativeIosReturn ? "iOS" : "Web");
         JsonNode response = requireSuccessful(transport.postJson(
                 uri(connection, credentials, "/sessions"),
                 headers(credentials, request.idempotencyKey()),
@@ -212,6 +238,9 @@ public class AdyenPaymentGatewayAdapter implements PaymentGatewayAdapter {
         actionData.put("clientKey", credentials.clientKey());
         actionData.put("environment", connection.environment() == GatewayEnvironment.SANDBOX ? "test" : "live");
         actionData.put("countryCode", credentials.countryCode());
+        actionData.put("amount", Long.toString(CurrencyMinorUnits.toMinorUnits(request.amount(), request.currency())));
+        actionData.put("currency", request.currency().toUpperCase(Locale.ROOT));
+        actionData.put("returnUrl", returnUrl);
         return new GatewayOperationResult(
                 UUID.randomUUID(),
                 GatewayOperationStatus.ACTION_REQUIRED,

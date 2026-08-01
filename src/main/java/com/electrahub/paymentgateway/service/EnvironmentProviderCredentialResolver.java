@@ -47,10 +47,20 @@ public class EnvironmentProviderCredentialResolver implements ProviderCredential
             return null;
         }
         try {
-            return jdbcTemplate.queryForObject(
+            String reference = jdbcTemplate.queryForObject(
                     "SELECT " + column + " FROM payment_gateway.gateway_connection WHERE id = ?",
                     String.class,
                     connection.id()
+            );
+            ProviderSecretReferencePolicy.Purpose purpose = switch (column) {
+                case "credential_secret_reference" -> ProviderSecretReferencePolicy.Purpose.CREDENTIAL;
+                case "webhook_secret_reference" -> ProviderSecretReferencePolicy.Purpose.WEBHOOK;
+                default -> throw new GatewayBusinessException(
+                        "GATEWAY_SECRET_REFERENCE_INVALID", "The gateway secret purpose is invalid."
+                );
+            };
+            return ProviderSecretReferencePolicy.requireApproved(
+                    connection.provider(), connection.endpointProfile(), purpose, reference
             );
         } catch (EmptyResultDataAccessException exception) {
             throw new GatewayBusinessException("GATEWAY_CONNECTION_NOT_FOUND", "Gateway connection was not found.");

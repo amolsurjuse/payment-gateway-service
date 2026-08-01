@@ -458,8 +458,18 @@ public final class GatewayContracts {
             UUID gatewayOperationId,
             String operationId,
             String idempotencyKey,
-            String providerReference
+            String providerReference,
+            GatewayOperationType operationType,
+            String publicTransactionReference
     ) {
+        public GatewayOperationStatusQuery(
+                UUID gatewayOperationId,
+                String operationId,
+                String idempotencyKey,
+                String providerReference
+        ) {
+            this(gatewayOperationId, operationId, idempotencyKey, providerReference, null, null);
+        }
     }
 
     /** Normalized only after the provider signature has been verified against the raw body. */

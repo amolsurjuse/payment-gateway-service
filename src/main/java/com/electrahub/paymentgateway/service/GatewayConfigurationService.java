@@ -82,6 +82,11 @@ public class GatewayConfigurationService {
     public GatewayConnection createConnection(CreateGatewayConnectionRequest request, UUID actorId) {
         Instant now = Instant.now();
         UUID id = UUID.randomUUID();
+        String endpointProfile = required(request.endpointProfile(), "endpointProfile", 80);
+        ProviderSecretReferencePolicy.References references = ProviderSecretReferencePolicy.requireApproved(
+                request.provider(), endpointProfile, request.credentialSecretReference(),
+                request.webhookSecretReference(), request.certificateSecretReference()
+        );
         jdbcTemplate.update(
                 """
                 INSERT INTO payment_gateway.gateway_connection
@@ -93,11 +98,11 @@ public class GatewayConfigurationService {
                 id,
                 request.provider().name(),
                 request.environment().name(),
-                required(request.endpointProfile(), "endpointProfile", 80),
+                endpointProfile,
                 encodeCapabilities(request.requestedCapabilities()),
-                secretReference(request.credentialSecretReference()),
-                secretReference(request.webhookSecretReference()),
-                secretReference(request.certificateSecretReference()),
+                references.credential(),
+                references.webhook(),
+                references.certificate(),
                 offset(now),
                 offset(now)
         );
@@ -123,6 +128,19 @@ public class GatewayConfigurationService {
             );
         }
 
+        String endpointProfile = required(request.endpointProfile(), "endpointProfile", 80);
+        ProviderSecretReferencePolicy.References currentReferences = secretReferences(connectionId);
+        ProviderSecretReferencePolicy.References updates = ProviderSecretReferencePolicy.requireApproved(
+                existing.provider(), endpointProfile, request.credentialSecretReference(),
+                request.webhookSecretReference(), request.certificateSecretReference()
+        );
+        ProviderSecretReferencePolicy.requireApproved(
+                existing.provider(), endpointProfile,
+                updates.credential() == null ? currentReferences.credential() : updates.credential(),
+                updates.webhook() == null ? currentReferences.webhook() : updates.webhook(),
+                updates.certificate() == null ? currentReferences.certificate() : updates.certificate()
+        );
+
         int updated = jdbcTemplate.update(
                 """
                 UPDATE payment_gateway.gateway_connection
@@ -139,10 +157,10 @@ public class GatewayConfigurationService {
                  WHERE id = ?
                    AND configuration_version = ?
                 """,
-                required(request.endpointProfile(), "endpointProfile", 80),
-                secretReference(request.credentialSecretReference()),
-                secretReference(request.webhookSecretReference()),
-                secretReference(request.certificateSecretReference()),
+                endpointProfile,
+                updates.credential(),
+                updates.webhook(),
+                updates.certificate(),
                 offset(Instant.now()),
                 connectionId,
                 request.expectedConfigurationVersion()
@@ -160,6 +178,7 @@ public class GatewayConfigurationService {
     public GatewayConnection validateConnection(UUID connectionId, UUID actorId) {
         GatewayConnection existing = requireConnection(connectionId);
         productionProviderMutationGuard.requireAllowed(existing);
+        requireApprovedStoredSecretReferences(existing);
         jdbcTemplate.update(
                 "UPDATE payment_gateway.gateway_connection SET status = 'VALIDATING', updated_at = ? WHERE id = ?",
                 offset(Instant.now()), connectionId
@@ -197,10 +216,23 @@ public class GatewayConfigurationService {
         if (existing.status() != GatewayConnectionStatus.READY) {
             throw new GatewayBusinessException("GATEWAY_CONNECTION_NOT_READY", "Validate the gateway connection before activation.");
         }
+        if (existing.provider() == GatewayProvider.ADYEN && !existing.webhookSecretConfigured()) {
+            throw new GatewayBusinessException(
+                    "ADYEN_WEBHOOK_SECRET_REQUIRED",
+                    "Configure and validate the Adyen webhook HMAC secret before activation."
+            );
+        }
+        requireApprovedStoredSecretReferences(existing);
         PaymentGatewayAdapter adapter = adapterRegistry.find(existing.provider())
                 .orElseThrow(() -> new GatewayBusinessException("ADAPTER_NOT_INSTALLED", "No installed adapter supports this provider."));
         if (adapter.requiresCredential(existing) && !existing.credentialConfigured()) {
             throw new GatewayBusinessException("GATEWAY_CREDENTIAL_NOT_CONFIGURED", "A credential secret reference is required before activating this provider connection.");
+        }
+        if (existing.provider() == GatewayProvider.ADYEN) {
+            ConnectionValidation activationValidation = adapter.validate(existing);
+            if (!activationValidation.valid()) {
+                throw new GatewayBusinessException(activationValidation.code(), activationValidation.message());
+            }
         }
         if (existing.provider() == GatewayProvider.MOCK && existing.environment() == GatewayEnvironment.PRODUCTION) {
             throw new GatewayBusinessException("MOCK_NOT_PERMITTED_PRODUCTION", "Mock gateways cannot be activated in production.");
@@ -520,9 +552,9 @@ public class GatewayConfigurationService {
 
     static void requirePaymentMethodSupported(GatewayProvider provider, PaymentMethodType paymentMethod) {
         boolean supported = switch (provider) {
-            case MOLLIE -> paymentMethod == PaymentMethodType.HOSTED_CHECKOUT;
+            case MOLLIE, ADYEN, RAZORPAY -> paymentMethod == PaymentMethodType.HOSTED_CHECKOUT;
             case TWO_C2P -> false;
-            case MOCK, STRIPE, ADYEN, RAZORPAY -> paymentMethod == PaymentMethodType.CARD_ON_FILE;
+            case MOCK, STRIPE -> paymentMethod == PaymentMethodType.CARD_ON_FILE;
         };
         if (!supported) {
             throw new GatewayBusinessException(
@@ -890,12 +922,32 @@ public class GatewayConfigurationService {
         return normalized;
     }
 
-    private String secretReference(String value) {
-        String normalized = nullable(value, 256);
-        if (normalized != null && !normalized.matches("[A-Za-z0-9][A-Za-z0-9_./:-]{2,255}")) {
-            throw new GatewayBusinessException("INVALID_SECRET_REFERENCE", "Gateway credentials must be referenced by an approved secret identifier.");
+    private void requireApprovedStoredSecretReferences(GatewayConnection connection) {
+        ProviderSecretReferencePolicy.References references = secretReferences(connection.id());
+        ProviderSecretReferencePolicy.requireApproved(
+                connection.provider(), connection.endpointProfile(), references.credential(),
+                references.webhook(), references.certificate()
+        );
+    }
+
+    private ProviderSecretReferencePolicy.References secretReferences(UUID connectionId) {
+        ProviderSecretReferencePolicy.References references = DataAccessUtils.singleResult(jdbcTemplate.query(
+                """
+                SELECT credential_secret_reference, webhook_secret_reference, certificate_secret_reference
+                  FROM payment_gateway.gateway_connection
+                 WHERE id = ?
+                """,
+                (rs, rowNum) -> new ProviderSecretReferencePolicy.References(
+                        rs.getString("credential_secret_reference"),
+                        rs.getString("webhook_secret_reference"),
+                        rs.getString("certificate_secret_reference")
+                ),
+                connectionId
+        ));
+        if (references == null) {
+            throw new GatewayBusinessException("GATEWAY_CONNECTION_NOT_FOUND", "Gateway connection was not found.");
         }
-        return normalized;
+        return references;
     }
 
     private String required(String value, String field, int maxLength) {

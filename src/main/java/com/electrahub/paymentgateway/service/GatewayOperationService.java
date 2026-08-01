@@ -3,6 +3,7 @@ package com.electrahub.paymentgateway.service;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationRequest;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationResult;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationStatus;
+import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationType;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayAction;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayActionType;
 import com.electrahub.paymentgateway.domain.GatewayContracts.RouteResolution;
@@ -87,8 +88,10 @@ public class GatewayOperationService {
                     """
                     INSERT INTO payment_gateway.gateway_operation
                         (id, route_id, provider_code, payment_intent_id, payment_attempt_id, operation_id,
-                         operation_type, idempotency_key, amount, currency, status, error_code, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_RECONCILIATION', 'PENDING_RECONCILIATION', ?, ?)
+                         operation_type, idempotency_key, amount, currency, status, provider_reference,
+                         error_code, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_RECONCILIATION', ?,
+                            'PENDING_RECONCILIATION', ?, ?)
                     """,
                     gatewayOperationId,
                     request.routeId(),
@@ -100,6 +103,7 @@ public class GatewayOperationService {
                     request.idempotencyKey().trim(),
                     normalizeAmount(request.amount()),
                     request.currency().trim().toUpperCase(),
+                    blankToNull(request.providerReference()),
                     offset(Instant.now()),
                     offset(Instant.now())
             );
@@ -135,7 +139,7 @@ public class GatewayOperationService {
                     gatewayOperationId,
                     GatewayOperationStatus.PENDING_RECONCILIATION,
                     ex.code(),
-                    null,
+                    blankToNull(request.providerReference()),
                     null,
                     null,
                     Instant.now()
@@ -159,7 +163,7 @@ public class GatewayOperationService {
                     gatewayOperationId,
                     GatewayOperationStatus.PENDING_RECONCILIATION,
                     "PAYMENT_PROVIDER_UNAVAILABLE",
-                    null,
+                    blankToNull(request.providerReference()),
                     null,
                     null,
                     Instant.now()
@@ -209,7 +213,9 @@ public class GatewayOperationService {
                 }
                 GatewayOperationResult providerStatus = adapter.queryStatus(
                         new com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationStatusQuery(
-                                operation.id(), operation.operationId(), operation.idempotencyKey(), operation.providerReference()),
+                                operation.id(), operation.operationId(), operation.idempotencyKey(),
+                                operation.providerReference(), operation.operationType(),
+                                operation.publicTransactionReference()),
                         candidate.connection()
                 );
                 if (providerStatus.status() == GatewayOperationStatus.PENDING_RECONCILIATION) {
@@ -290,7 +296,8 @@ public class GatewayOperationService {
                   FROM due
                  WHERE operation.id = due.id
                 RETURNING operation.id, operation.route_id, operation.operation_id, operation.idempotency_key,
-                          operation.provider_reference, operation.recovery_attempt_count
+                          operation.provider_reference, operation.operation_type,
+                          operation.public_transaction_reference, operation.recovery_attempt_count
                 """,
                 this::mapRecoveryRecord,
                 offset(now),
@@ -373,7 +380,9 @@ public class GatewayOperationService {
                 ));
         GatewayOperationResult providerStatus = adapter.queryStatus(
                 new com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationStatusQuery(
-                        operation.id(), operation.operationId(), operation.idempotencyKey(), operation.providerReference()
+                        operation.id(), operation.operationId(), operation.idempotencyKey(),
+                        operation.providerReference(), operation.operationType(),
+                        operation.publicTransactionReference()
                 ),
                 candidate.connection()
         );
@@ -399,7 +408,8 @@ public class GatewayOperationService {
     private GatewayOperationRecoveryRecord findRecoveryRecord(UUID operationId) {
         return DataAccessUtils.singleResult(jdbcTemplate.query(
                 """
-                SELECT id, route_id, operation_id, idempotency_key, provider_reference, recovery_attempt_count
+                SELECT id, route_id, operation_id, idempotency_key, provider_reference, operation_type,
+                       public_transaction_reference, recovery_attempt_count
                   FROM payment_gateway.gateway_operation
                  WHERE id = ?
                 """,
@@ -496,6 +506,8 @@ public class GatewayOperationService {
                 rs.getString("operation_id"),
                 rs.getString("idempotency_key"),
                 rs.getString("provider_reference"),
+                GatewayOperationType.valueOf(rs.getString("operation_type")),
+                rs.getString("public_transaction_reference"),
                 rs.getInt("recovery_attempt_count")
         );
     }
@@ -562,6 +574,8 @@ public class GatewayOperationService {
             String operationId,
             String idempotencyKey,
             String providerReference,
+            GatewayOperationType operationType,
+            String publicTransactionReference,
             int recoveryAttemptCount
     ) {
     }

@@ -14,6 +14,7 @@ import com.electrahub.paymentgateway.service.spi.GatewayBusinessException;
 import com.electrahub.paymentgateway.service.spi.GatewayWebhookVerificationException;
 import com.electrahub.paymentgateway.service.spi.ProviderCredentialResolver;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
@@ -39,18 +40,22 @@ class TwoC2PPaymentGatewayAdapterTest {
 
     private HttpServer server;
     private TwoC2PPaymentGatewayAdapter adapter;
+    private ObjectMapper objectMapper;
+    private JwtHs256Codec jwtCodec;
+    private JsonNode lastPaymentTokenPayload;
+    private JsonNode lastInquiryPayload;
+    private int paymentTokenRequests;
+    private int inquiryRequests;
+    private String responseSigningKey;
 
     @BeforeEach
     void setUp() throws IOException {
+        objectMapper = new ObjectMapper();
+        jwtCodec = new JwtHs256Codec(objectMapper);
+        responseSigningKey = DEMO_KEY;
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/payment/4.3/paymentToken", exchange -> respond(exchange, """
-                {"paymentToken":"token-demo","webPaymentUrl":"https://sandbox-pgw-ui.2c2p.com/pay/demo",
-                 "respCode":"0000","respDesc":"Success"}
-                """));
-        server.createContext("/payment/4.3/paymentInquiry", exchange -> respond(exchange, """
-                {"merchantID":"JT01","invoiceNo":"operation123","referenceNo":"reference-demo",
-                 "respCode":"0000","respDesc":"Success"}
-                """));
+        server.createContext("/payment/4.3/paymentToken", this::paymentToken);
+        server.createContext("/payment/4.3/paymentInquiry", this::paymentInquiry);
         server.start();
         ProviderCredentialResolver credentials = new ProviderCredentialResolver() {
             @Override
@@ -66,7 +71,7 @@ class TwoC2PPaymentGatewayAdapterTest {
         adapter = new TwoC2PPaymentGatewayAdapter(
                 new ProviderHttpTransport(),
                 credentials,
-                new ObjectMapper(),
+                objectMapper,
                 "http://127.0.0.1:" + server.getAddress().getPort(),
                 "JT01",
                 DEMO_KEY,
@@ -93,6 +98,58 @@ class TwoC2PPaymentGatewayAdapterTest {
     }
 
     @Test
+    void validatesCredentialsWithASignedReadOnlyInquiry() {
+        var validation = adapter.validate(connection());
+
+        assertThat(validation.valid()).isTrue();
+        assertThat(inquiryRequests).isEqualTo(1);
+        assertThat(paymentTokenRequests).isZero();
+        assertThat(lastInquiryPayload.path("invoiceNo").asText()).startsWith("EHVALIDATE");
+    }
+
+    @Test
+    void rejectsAProbeThatIsNotSignedByTheConfiguredSandboxKey() {
+        responseSigningKey = "different-signing-key-abcdefghijklmnopqrstuvwxyz";
+
+        var validation = adapter.validate(connection());
+
+        assertThat(validation.valid()).isFalse();
+        assertThat(validation.code()).isEqualTo("TWO_C2P_CREDENTIAL_REJECTED");
+    }
+
+    @Test
+    void privateSandboxRestrictsHostedPaymentToCardPreauthorization() {
+        ProviderCredentialResolver privateCredentials = new ProviderCredentialResolver() {
+            @Override
+            public String requireCredential(GatewayConnection connection) {
+                return "{\"merchantId\":\"PRIVATE01\",\"secretKey\":\"" + DEMO_KEY + "\"}";
+            }
+
+            @Override
+            public Optional<String> webhookSecret(GatewayConnection connection) {
+                return Optional.empty();
+            }
+        };
+        TwoC2PPaymentGatewayAdapter privateAdapter = new TwoC2PPaymentGatewayAdapter(
+                new ProviderHttpTransport(), privateCredentials, objectMapper,
+                "http://127.0.0.1:" + server.getAddress().getPort(), "JT01", DEMO_KEY,
+                "https://api.electrahub.net/payment-gateway/api/v1/gateway/webhooks/test"
+        );
+
+        assertThat(privateAdapter.validate(privateConnection()).valid()).isTrue();
+        var result = privateAdapter.execute(
+                request(GatewayOperationType.AUTHORIZE, "electrahub://payment/return"),
+                privateConnection()
+        );
+
+        assertThat(result.status()).isEqualTo(GatewayOperationStatus.ACTION_REQUIRED);
+        assertThat(lastPaymentTokenPayload.path("paymentChannel").get(0).asText()).isEqualTo("CC");
+        assertThat(lastPaymentTokenPayload.path("transactionMode").asText()).isEqualTo("PREAUTH");
+        assertThat(lastPaymentTokenPayload.path("schemeReturnUrl").asText()).isEqualTo("electrahub://payment/return");
+        assertThat(lastPaymentTokenPayload.path("appBundleID").asText()).isEqualTo("net.electrahub.driverportalios");
+    }
+
+    @Test
     void performsSignedPaymentInquiryAndRejectsUnavailableMaintenanceOperations() {
         var result = adapter.queryStatus(
                 new GatewayOperationStatusQuery(UUID.randomUUID(), "operation-123", "idem", "token-demo"),
@@ -108,7 +165,6 @@ class TwoC2PPaymentGatewayAdapterTest {
 
     @Test
     void verifiesAndNormalizesSignedBackendPaymentResponse() throws Exception {
-        ObjectMapper objectMapper = new ObjectMapper();
         String token = new JwtHs256Codec(objectMapper).encode(Map.of(
                 "merchantID", "JT01",
                 "invoiceNo", "operation123",
@@ -136,9 +192,39 @@ class TwoC2PPaymentGatewayAdapterTest {
         )).isInstanceOf(GatewayWebhookVerificationException.class);
     }
 
-    private void respond(HttpExchange exchange, String body) throws IOException {
+    private void paymentToken(HttpExchange exchange) throws IOException {
+        lastPaymentTokenPayload = requestPayload(exchange);
+        paymentTokenRequests++;
+        respondSigned(exchange, Map.of(
+                "paymentToken", "token-demo",
+                "webPaymentUrl", "https://sandbox-pgw-ui.2c2p.com/pay/demo",
+                "respCode", "0000",
+                "respDesc", "Success"
+        ));
+    }
+
+    private void paymentInquiry(HttpExchange exchange) throws IOException {
+        lastInquiryPayload = requestPayload(exchange);
+        inquiryRequests++;
+        String invoiceNo = lastInquiryPayload.path("invoiceNo").asText("operation123");
+        String merchantId = lastInquiryPayload.path("merchantID").asText("JT01");
+        respondSigned(exchange, Map.of(
+                "merchantID", merchantId,
+                "invoiceNo", invoiceNo,
+                "referenceNo", "reference-demo",
+                "respCode", invoiceNo.startsWith("EHVALIDATE") ? "2001" : "0000",
+                "respDesc", invoiceNo.startsWith("EHVALIDATE") ? "Payment not found" : "Success"
+        ));
+    }
+
+    private JsonNode requestPayload(HttpExchange exchange) throws IOException {
         String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-        assertThat(request).contains("\"payload\"");
+        JsonNode outer = objectMapper.readTree(request);
+        return jwtCodec.decodeAndVerify(outer.path("payload").asText(), DEMO_KEY);
+    }
+
+    private void respondSigned(HttpExchange exchange, Map<String, Object> payload) throws IOException {
+        String body = objectMapper.writeValueAsString(Map.of("payload", jwtCodec.encode(payload, responseSigningKey)));
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json");
         exchange.sendResponseHeaders(200, bytes.length);
@@ -154,11 +240,23 @@ class TwoC2PPaymentGatewayAdapterTest {
         );
     }
 
+    private GatewayConnection privateConnection() {
+        return new GatewayConnection(
+                UUID.randomUUID(), GatewayProvider.TWO_C2P, GatewayEnvironment.SANDBOX,
+                GatewayConnectionStatus.READY, "2c2p-v4.3", "2c2p-sandbox",
+                Set.of(), true, false, false, null, null, null, 1, Instant.now(), Instant.now()
+        );
+    }
+
     private GatewayOperationRequest request(GatewayOperationType type) {
+        return request(type, "https://driver.electrahub.net/payments/return");
+    }
+
+    private GatewayOperationRequest request(GatewayOperationType type, String returnUrl) {
         return new GatewayOperationRequest(
                 UUID.randomUUID(), "payment-intent-123", null, "operation-123", "idem-123", type,
                 new BigDecimal("10.00"), "SGD", "account-123", null, null, "token-demo",
-                "https://driver.electrahub.net/payments/return", Instant.now()
+                returnUrl, Instant.now()
         );
     }
 }

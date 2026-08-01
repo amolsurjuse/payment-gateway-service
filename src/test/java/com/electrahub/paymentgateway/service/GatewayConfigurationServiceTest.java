@@ -2,6 +2,7 @@ package com.electrahub.paymentgateway.service;
 
 import com.electrahub.paymentgateway.config.GatewayProperties;
 import com.electrahub.paymentgateway.domain.GatewayContracts.CreatePaymentRouteRequest;
+import com.electrahub.paymentgateway.domain.GatewayContracts.CreateGatewayConnectionRequest;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayConnection;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayConnectionStatus;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayCapability;
@@ -25,6 +26,35 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verifyNoInteractions;
 
 class GatewayConfigurationServiceTest {
+
+    @Test
+    void rejectsUnapprovedProviderCredentialReferencesBeforeWriting() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        PaymentGatewayRegistry registry = mock(PaymentGatewayRegistry.class);
+        GatewayConfigurationService service = new GatewayConfigurationService(
+                jdbcTemplate,
+                registry,
+                new GatewayRouteCache(properties(false)),
+                new ProductionProviderMutationGuard(properties(false))
+        );
+        CreateGatewayConnectionRequest request = new CreateGatewayConnectionRequest(
+                GatewayProvider.MOLLIE,
+                GatewayEnvironment.SANDBOX,
+                "mollie-sandbox",
+                "env:APP_SECURITY_INTERNAL_TOKEN",
+                null,
+                null,
+                Set.of()
+        );
+
+        assertThatThrownBy(() -> service.createConnection(request, UUID.randomUUID()))
+                .isInstanceOfSatisfying(GatewayBusinessException.class, exception ->
+                        org.assertj.core.api.Assertions.assertThat(exception.code())
+                                .isEqualTo("GATEWAY_SECRET_REFERENCE_NOT_APPROVED")
+                );
+
+        verifyNoInteractions(jdbcTemplate, registry);
+    }
 
     @Test
     void requiresASeparateAuditedActionToEnableANewRoute() {
@@ -100,21 +130,49 @@ class GatewayConfigurationServiceTest {
     }
 
     @Test
-    void acceptsHostedCheckoutOnlyForHostedCheckoutProviders() {
-        org.assertj.core.api.Assertions.assertThatCode(() ->
-                GatewayConfigurationService.requirePaymentMethodSupported(
-                        GatewayProvider.MOLLIE,
-                        PaymentMethodType.HOSTED_CHECKOUT
-                )
-        ).doesNotThrowAnyException();
-
-        assertThatThrownBy(() -> GatewayConfigurationService.requirePaymentMethodSupported(
-                GatewayProvider.MOLLIE,
-                PaymentMethodType.CARD_ON_FILE
-        )).isInstanceOfSatisfying(GatewayBusinessException.class, exception ->
-                org.assertj.core.api.Assertions.assertThat(exception.code())
-                        .isEqualTo("PAYMENT_METHOD_NOT_SUPPORTED")
+    void rejectsAdyenActivationWithoutAWebhookSecretReference() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        PaymentGatewayRegistry registry = mock(PaymentGatewayRegistry.class);
+        GatewayConfigurationService service = spy(new GatewayConfigurationService(
+                jdbcTemplate,
+                registry,
+                new GatewayRouteCache(properties(false)),
+                new ProductionProviderMutationGuard(properties(false))
+        ));
+        GatewayConnection connection = new GatewayConnection(
+                UUID.randomUUID(), GatewayProvider.ADYEN, GatewayEnvironment.SANDBOX,
+                GatewayConnectionStatus.READY, "adyen-checkout-v72", "adyen-sandbox", Set.of(),
+                true, false, false, Instant.now(), Instant.now(), null, 1, Instant.now(), Instant.now()
         );
+        doReturn(connection).when(service).requireConnection(connection.id());
+
+        assertThatThrownBy(() -> service.activateConnection(connection.id(), UUID.randomUUID()))
+                .isInstanceOfSatisfying(GatewayBusinessException.class, exception ->
+                        org.assertj.core.api.Assertions.assertThat(exception.code())
+                                .isEqualTo("ADYEN_WEBHOOK_SECRET_REQUIRED")
+                );
+
+        verifyNoInteractions(jdbcTemplate, registry);
+    }
+
+    @Test
+    void acceptsHostedCheckoutOnlyForCustomerInteractiveProviders() {
+        for (GatewayProvider provider : Set.of(GatewayProvider.MOLLIE, GatewayProvider.ADYEN, GatewayProvider.RAZORPAY)) {
+            org.assertj.core.api.Assertions.assertThatCode(() ->
+                    GatewayConfigurationService.requirePaymentMethodSupported(
+                            provider,
+                            PaymentMethodType.HOSTED_CHECKOUT
+                    )
+            ).doesNotThrowAnyException();
+
+            assertThatThrownBy(() -> GatewayConfigurationService.requirePaymentMethodSupported(
+                    provider,
+                    PaymentMethodType.CARD_ON_FILE
+            )).isInstanceOfSatisfying(GatewayBusinessException.class, exception ->
+                    org.assertj.core.api.Assertions.assertThat(exception.code())
+                            .isEqualTo("PAYMENT_METHOD_NOT_SUPPORTED")
+            );
+        }
     }
 
     @Test
@@ -126,6 +184,19 @@ class GatewayConfigurationServiceTest {
                 org.assertj.core.api.Assertions.assertThat(exception.code())
                         .isEqualTo("PAYMENT_METHOD_NOT_SUPPORTED")
         );
+    }
+
+    @Test
+    void keepsTwoC2PExcludedUntilMaintenanceExchangeIsImplemented() {
+        for (PaymentMethodType paymentMethod : PaymentMethodType.values()) {
+            assertThatThrownBy(() -> GatewayConfigurationService.requirePaymentMethodSupported(
+                    GatewayProvider.TWO_C2P,
+                    paymentMethod
+            )).isInstanceOfSatisfying(GatewayBusinessException.class, exception ->
+                    org.assertj.core.api.Assertions.assertThat(exception.code())
+                            .isEqualTo("PAYMENT_METHOD_NOT_SUPPORTED")
+            );
+        }
     }
 
     @Test

@@ -100,10 +100,7 @@ public class RazorpayPaymentGatewayAdapter implements PaymentGatewayAdapter {
             case REFUND -> refund(request, connection);
             case STATUS_QUERY -> queryStatus(new GatewayOperationStatusQuery(
                     null, request.operationId(), request.idempotencyKey(), request.providerReference()), connection);
-            case VOID -> throw new GatewayBusinessException(
-                    "RAZORPAY_VOID_UNSUPPORTED",
-                    "Razorpay automatically releases uncaptured authorizations; explicit void is not available."
-            );
+            case VOID -> awaitAutomaticRelease(request);
         };
     }
 
@@ -111,6 +108,21 @@ public class RazorpayPaymentGatewayAdapter implements PaymentGatewayAdapter {
     public GatewayOperationResult queryStatus(GatewayOperationStatusQuery query, GatewayConnection connection) {
         Credentials credentials = credentials(connection);
         String reference = requireReference(query.providerReference());
+        if (query.operationType() == GatewayOperationType.REFUND) {
+            String refundId = requireRefundReference(query.publicTransactionReference());
+            JsonNode refund = requireSuccessful(transport.get(
+                    uri("/v1/refunds/" + path(refundId)), authorization(credentials)
+            ));
+            return refundResult(query.gatewayOperationId(), refund, requirePaymentReference(reference));
+        }
+        if (query.operationType() == GatewayOperationType.CAPTURE) {
+            String paymentId = reference.startsWith("pay_")
+                    ? reference : requirePaymentReference(query.publicTransactionReference());
+            JsonNode payment = requireSuccessful(transport.get(
+                    uri("/v1/payments/" + path(paymentId)), authorization(credentials)
+            ));
+            return captureResult(query.gatewayOperationId(), payment, paymentId);
+        }
         ProviderHttpTransport.Response response;
         JsonNode entity;
         if (reference.startsWith("order_")) {
@@ -121,6 +133,9 @@ public class RazorpayPaymentGatewayAdapter implements PaymentGatewayAdapter {
         } else {
             response = transport.get(uri("/v1/payments/" + path(reference)), authorization(credentials));
             entity = requireSuccessful(response);
+        }
+        if (query.operationType() == GatewayOperationType.VOID) {
+            return automaticReleaseResult(query.gatewayOperationId(), entity, requirePaymentReference(reference));
         }
         return paymentResult(query.gatewayOperationId(), entity, reference);
     }
@@ -214,18 +229,63 @@ public class RazorpayPaymentGatewayAdapter implements PaymentGatewayAdapter {
         JsonNode response = requireSuccessful(transport.postForm(
                 uri("/v1/payments/" + path(paymentId) + "/capture"), authorization(credentials(connection)), form
         ));
-        return paymentResult(null, response, paymentId);
+        return captureResult(null, response, paymentId);
     }
 
     private GatewayOperationResult refund(GatewayOperationRequest request, GatewayConnection connection) {
         String paymentId = requirePaymentReference(request.providerReference());
         JsonNode response = requireSuccessful(transport.postForm(
                 uri("/v1/payments/" + path(paymentId) + "/refund"),
-                authorization(credentials(connection)),
+                refundAuthorization(credentials(connection), request.idempotencyKey()),
                 Map.of("amount", Long.toString(CurrencyMinorUnits.toMinorUnits(request.amount(), request.currency())))
         ));
-        String refundId = response.path("id").asText();
-        return result(GatewayOperationStatus.PENDING_RECONCILIATION, "PROVIDER_STATUS_PENDING", paymentId, refundId, null);
+        return refundResult(null, response, paymentId);
+    }
+
+    private GatewayOperationResult awaitAutomaticRelease(GatewayOperationRequest request) {
+        String paymentId = requirePaymentReference(request.providerReference());
+        return result(GatewayOperationStatus.PENDING_RECONCILIATION, "RAZORPAY_AUTO_RELEASE_PENDING",
+                paymentId, paymentId, null);
+    }
+
+    private GatewayOperationResult captureResult(UUID operationId, JsonNode payment, String fallbackPaymentId) {
+        String status = payment.path("status").asText("created");
+        GatewayOperationStatus gatewayStatus = switch (status) {
+            case "captured", "refunded" -> GatewayOperationStatus.SUCCEEDED;
+            case "failed" -> GatewayOperationStatus.DECLINED;
+            default -> GatewayOperationStatus.PENDING_RECONCILIATION;
+        };
+        String paymentId = requiredProviderValue(payment.path("id").asText(fallbackPaymentId), "RAZORPAY_PAYMENT_INVALID");
+        String code = gatewayStatus == GatewayOperationStatus.SUCCEEDED ? "APPROVED"
+                : gatewayStatus == GatewayOperationStatus.DECLINED ? "PAYMENT_CAPTURE_DECLINED" : "PROVIDER_STATUS_PENDING";
+        return operationResult(operationId, gatewayStatus, code, paymentId, paymentId, null);
+    }
+
+    private GatewayOperationResult refundResult(UUID operationId, JsonNode refund, String fallbackPaymentId) {
+        String refundId = requireRefundReference(refund.path("id").asText());
+        String paymentId = refund.path("payment_id").asText(fallbackPaymentId);
+        requirePaymentReference(paymentId);
+        GatewayOperationStatus gatewayStatus = switch (refund.path("status").asText("pending")) {
+            case "processed" -> GatewayOperationStatus.SUCCEEDED;
+            case "failed" -> GatewayOperationStatus.FAILED;
+            default -> GatewayOperationStatus.PENDING_RECONCILIATION;
+        };
+        String code = gatewayStatus == GatewayOperationStatus.SUCCEEDED ? "APPROVED"
+                : gatewayStatus == GatewayOperationStatus.FAILED ? "RAZORPAY_REFUND_FAILED" : "PROVIDER_STATUS_PENDING";
+        return operationResult(operationId, gatewayStatus, code, paymentId, refundId, null);
+    }
+
+    private GatewayOperationResult automaticReleaseResult(UUID operationId, JsonNode payment, String fallbackPaymentId) {
+        String paymentId = requiredProviderValue(payment.path("id").asText(fallbackPaymentId), "RAZORPAY_PAYMENT_INVALID");
+        GatewayOperationStatus gatewayStatus = switch (payment.path("status").asText("created")) {
+            case "refunded", "failed" -> GatewayOperationStatus.SUCCEEDED;
+            case "created", "authorized" -> GatewayOperationStatus.PENDING_RECONCILIATION;
+            default -> GatewayOperationStatus.FAILED;
+        };
+        String code = gatewayStatus == GatewayOperationStatus.SUCCEEDED ? "RAZORPAY_AUTO_RELEASED"
+                : gatewayStatus == GatewayOperationStatus.FAILED ? "RAZORPAY_AUTO_RELEASE_FAILED"
+                : "RAZORPAY_AUTO_RELEASE_PENDING";
+        return operationResult(operationId, gatewayStatus, code, paymentId, paymentId, null);
     }
 
     private GatewayOperationResult paymentResult(UUID operationId, JsonNode entity, String fallbackReference) {
@@ -286,6 +346,20 @@ public class RazorpayPaymentGatewayAdapter implements PaymentGatewayAdapter {
         return Map.of("Authorization", "Basic " + encoded, "Accept", "application/json");
     }
 
+    private Map<String, String> refundAuthorization(Credentials credentials, String idempotencyKey) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            throw new GatewayBusinessException("RAZORPAY_REFUND_IDEMPOTENCY_REQUIRED", "Razorpay refunds require an idempotency key.");
+        }
+        String normalized = idempotencyKey.trim();
+        if (!normalized.matches("^[A-Za-z0-9_-]{10,}$")) {
+            normalized = UUID.nameUUIDFromBytes(normalized.getBytes(StandardCharsets.UTF_8))
+                    .toString().replace("-", "");
+        }
+        Map<String, String> headers = new LinkedHashMap<>(authorization(credentials));
+        headers.put("X-Refund-Idempotency", normalized);
+        return Map.copyOf(headers);
+    }
+
     private JsonNode requireSuccessful(ProviderHttpTransport.Response response) {
         if (response.successful()) {
             try {
@@ -330,7 +404,19 @@ public class RazorpayPaymentGatewayAdapter implements PaymentGatewayAdapter {
 
     private GatewayOperationResult result(GatewayOperationStatus status, String code, String providerReference,
                                           String publicReference, GatewayAction action) {
-        return new GatewayOperationResult(UUID.randomUUID(), status, code, providerReference, publicReference, action, Instant.now());
+        return operationResult(null, status, code, providerReference, publicReference, action);
+    }
+
+    private GatewayOperationResult operationResult(
+            UUID operationId,
+            GatewayOperationStatus status,
+            String code,
+            String providerReference,
+            String publicReference,
+            GatewayAction action
+    ) {
+        return new GatewayOperationResult(operationId == null ? UUID.randomUUID() : operationId,
+                status, code, providerReference, publicReference, action, Instant.now());
     }
 
     private String requireReference(String value) {
@@ -343,6 +429,13 @@ public class RazorpayPaymentGatewayAdapter implements PaymentGatewayAdapter {
     private String requirePaymentReference(String value) {
         if (value == null || !value.startsWith("pay_")) {
             throw new GatewayBusinessException("RAZORPAY_PAYMENT_REFERENCE_REQUIRED", "A Razorpay payment reference is required.");
+        }
+        return value;
+    }
+
+    private String requireRefundReference(String value) {
+        if (value == null || !value.matches("^rfnd_[A-Za-z0-9]+$")) {
+            throw new GatewayBusinessException("RAZORPAY_REFUND_REFERENCE_REQUIRED", "A Razorpay refund reference is required.");
         }
         return value;
     }
