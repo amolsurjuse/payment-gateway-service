@@ -3,6 +3,7 @@ package com.electrahub.paymentgateway.api;
 import com.electrahub.paymentgateway.domain.GatewayContracts.CreateGatewayConnectionRequest;
 import com.electrahub.paymentgateway.domain.GatewayContracts.CreateMerchantAccountRequest;
 import com.electrahub.paymentgateway.domain.GatewayContracts.CreatePaymentRouteRequest;
+import com.electrahub.paymentgateway.domain.GatewayContracts.ConnectionValidation;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayConfigurationSnapshot;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayConnection;
 import com.electrahub.paymentgateway.domain.GatewayContracts.MerchantAccount;
@@ -72,6 +73,11 @@ public class GatewayAdminController {
     @PostMapping("/connections/{connectionId}/validate")
     public GatewayConnection validateConnection(HttpServletRequest request, @PathVariable UUID connectionId) {
         return configurationService.validateConnection(connectionId, accessContextResolver.requireSystemAdmin(request));
+    }
+
+    @PostMapping("/connections/{connectionId}/probe")
+    public ConnectionValidation probeConnection(HttpServletRequest request, @PathVariable UUID connectionId) {
+        return configurationService.probeConnection(connectionId, accessContextResolver.requireSystemAdmin(request));
     }
 
     @PostMapping("/connections/{connectionId}/activate")

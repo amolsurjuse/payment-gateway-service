@@ -210,6 +210,28 @@ public class GatewayConfigurationService {
         return saved;
     }
 
+    /**
+     * Verifies the stored sandbox provider configuration without changing connection lifecycle,
+     * configuration version, routes, or the route cache. This is intended for deployment health
+     * checks where calling {@link #validateConnection(UUID, UUID)} would demote an ACTIVE
+     * connection to READY.
+     */
+    public ConnectionValidation probeConnection(UUID connectionId, UUID actorId) {
+        GatewayConnection existing = requireConnection(connectionId);
+        if (existing.environment() != GatewayEnvironment.SANDBOX) {
+            throw new GatewayBusinessException(
+                    "GATEWAY_SANDBOX_PROBE_REQUIRED",
+                    "Read-only provider probes are restricted to sandbox connections."
+            );
+        }
+        productionProviderMutationGuard.requireAllowed(existing);
+        requireApprovedStoredSecretReferences(existing);
+        ConnectionValidation result = validateConnectionSafely(existing);
+        audit(actorId, "GATEWAY_CONNECTION_PROBED", "GATEWAY_CONNECTION", connectionId,
+                connectionAudit(existing), connectionAudit(existing));
+        return result;
+    }
+
     public GatewayConnection activateConnection(UUID connectionId, UUID actorId) {
         GatewayConnection existing = requireConnection(connectionId);
         productionProviderMutationGuard.requireAllowed(existing);

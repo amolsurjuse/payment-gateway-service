@@ -26,6 +26,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doAnswer;
@@ -38,6 +39,74 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 
 class GatewayConfigurationServiceTest {
+
+    @Test
+    void rejectsProductionProbeEvenWhenProductionMutationsAreEnabled() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        PaymentGatewayRegistry registry = mock(PaymentGatewayRegistry.class);
+        GatewayConfigurationService service = spy(new GatewayConfigurationService(
+                jdbcTemplate,
+                registry,
+                new GatewayRouteCache(properties(true)),
+                new ProductionProviderMutationGuard(properties(true))
+        ));
+        GatewayConnection connection = connection(GatewayConnectionStatus.ACTIVE);
+        doReturn(connection).when(service).requireConnection(connection.id());
+
+        assertThatThrownBy(() -> service.probeConnection(connection.id(), UUID.randomUUID()))
+                .isInstanceOfSatisfying(GatewayBusinessException.class, exception ->
+                        assertThat(exception.code()).isEqualTo("GATEWAY_SANDBOX_PROBE_REQUIRED")
+                );
+
+        verifyNoInteractions(jdbcTemplate, registry);
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void probesSandboxConnectionWithoutMutatingConnectionLifecycle() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        PaymentGatewayRegistry registry = mock(PaymentGatewayRegistry.class);
+        PaymentGatewayAdapter adapter = mock(PaymentGatewayAdapter.class);
+        GatewayConfigurationService service = spy(new GatewayConfigurationService(
+                jdbcTemplate,
+                registry,
+                new GatewayRouteCache(properties(false)),
+                new ProductionProviderMutationGuard(properties(false))
+        ));
+        GatewayConnection connection = new GatewayConnection(
+                UUID.randomUUID(), GatewayProvider.MOLLIE, GatewayEnvironment.SANDBOX,
+                GatewayConnectionStatus.ACTIVE, "mollie-rest-v2", "mollie-sandbox", Set.of(GatewayCapability.AUTHORIZE),
+                true, false, false, Instant.now(), Instant.now(), null, 7, Instant.now(), Instant.now()
+        );
+        ConnectionValidation validation = new ConnectionValidation(
+                true, "READY", "Mollie connection validated.",
+                Set.of(GatewayCapability.AUTHORIZE), "mollie-rest-v2"
+        );
+        doReturn(connection).when(service).requireConnection(connection.id());
+        doAnswer(invocation -> {
+            RowMapper<?> mapper = invocation.getArgument(1);
+            ResultSet resultSet = mock(ResultSet.class);
+            when(resultSet.getString("credential_secret_reference"))
+                    .thenReturn("env:APP_GATEWAY_MOLLIE_CREDENTIAL");
+            when(resultSet.getString("webhook_secret_reference")).thenReturn(null);
+            when(resultSet.getString("certificate_secret_reference")).thenReturn(null);
+            return List.of(mapper.mapRow(resultSet, 0));
+        }).when(jdbcTemplate).query(anyString(), any(RowMapper.class), any(Object[].class));
+        when(registry.find(GatewayProvider.MOLLIE)).thenReturn(Optional.of(adapter));
+        when(adapter.validate(connection)).thenReturn(validation);
+
+        assertThat(service.probeConnection(connection.id(), UUID.randomUUID())).isEqualTo(validation);
+
+        verify(adapter).validate(connection);
+        verify(jdbcTemplate).update(
+                org.mockito.ArgumentMatchers.contains("INSERT INTO payment_gateway.gateway_configuration_audit"),
+                any(Object[].class)
+        );
+        verify(jdbcTemplate, never()).update(
+                org.mockito.ArgumentMatchers.contains("UPDATE payment_gateway.gateway_connection"),
+                any(Object[].class)
+        );
+    }
 
     @Test
     void rejectsUnapprovedProviderCredentialReferencesBeforeWriting() {
