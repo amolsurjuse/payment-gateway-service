@@ -7,6 +7,7 @@ import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayWebhookEvent
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayWebhookOutcome;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayWebhookReceipt;
 import com.electrahub.paymentgateway.service.spi.GatewayBusinessException;
+import com.electrahub.paymentgateway.service.spi.GatewayWebhookVerificationException;
 import com.electrahub.paymentgateway.service.spi.PaymentGatewayAdapter;
 import org.springframework.dao.support.DataAccessUtils;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -84,6 +85,8 @@ public class GatewayWebhookService {
             String payloadHash,
             Instant receivedAt
     ) {
+        OperationMatch operation = findOperation(connection.id(), event);
+        validateStableFields(operation, event);
         UUID eventId = UUID.randomUUID();
         int inserted = jdbcTemplate.update(
                     """
@@ -115,7 +118,7 @@ public class GatewayWebhookService {
             throw new IllegalStateException("Webhook conflict was not readable after insert.");
         }
 
-        UUID operationId = findOperation(connection.id(), event);
+        UUID operationId = operation == null ? null : operation.id();
         boolean operationUpdated = operationId != null && applyOutcome(operationId, event);
         String processingStatus = operationUpdated ? "APPLIED" : "IGNORED";
         String receiptCode = operationUpdated ? "GATEWAY_WEBHOOK_APPLIED" : "GATEWAY_WEBHOOK_NO_MATCH";
@@ -130,32 +133,216 @@ public class GatewayWebhookService {
         return new GatewayWebhookReceipt(eventId, false, operationUpdated, receiptCode, receivedAt);
     }
 
-    private UUID findOperation(UUID connectionId, GatewayWebhookEvent event) {
-        return DataAccessUtils.singleResult(jdbcTemplate.query(
-                """
-                SELECT operation.id
+    private OperationMatch findOperation(UUID connectionId, GatewayWebhookEvent event) {
+        if ("payment.maintenance.refund".equals(event.eventType())) {
+            return findRefundOperation(connectionId, event);
+        }
+        String idempotencyKey = blankToNull(event.idempotencyKey());
+        String providerReference = blankToNull(event.providerReference());
+        String merchantReference = blankToNull(event.merchantReference());
+        String publicReference = blankToNull(event.publicTransactionReference());
+        java.math.BigDecimal amount = event.amount();
+        String currency = blankToNull(event.currency());
+        if (idempotencyKey == null && publicReference != null) {
+            OperationMatch exactPublicReference = findByExactPublicReference(
+                    connectionId, publicReference, amount, currency
+            );
+            if (exactPublicReference != null) {
+                return exactPublicReference;
+            }
+        }
+        StringBuilder sql = new StringBuilder("""
+                SELECT operation.id, operation.amount, operation.currency, operation.idempotency_key
                   FROM payment_gateway.gateway_operation operation
                   JOIN payment_gateway.payment_route route ON route.id = operation.route_id
                  WHERE route.connection_id = ?
                    AND operation.status IN ('PENDING_RECONCILIATION', 'ACTION_REQUIRED')
-                   AND ((? IS NOT NULL AND operation.provider_reference = ?)
-                     OR (? IS NOT NULL AND operation.public_transaction_reference = ?)
-                     OR (? IS NOT NULL AND operation.payment_intent_id = ?)
-                     OR (? IS NOT NULL AND operation.operation_id = ?)
-                     OR (? IS NOT NULL AND operation.provider_reference = ?)
-                     OR (? IS NOT NULL AND operation.public_transaction_reference = ?))
-                 ORDER BY operation.created_at DESC
-                 LIMIT 1
-                """,
-                (rs, rowNum) -> rs.getObject("id", UUID.class),
-                connectionId,
-                blankToNull(event.providerReference()), blankToNull(event.providerReference()),
-                blankToNull(event.merchantReference()), blankToNull(event.merchantReference()),
-                blankToNull(event.merchantReference()), blankToNull(event.merchantReference()),
-                blankToNull(event.merchantReference()), blankToNull(event.merchantReference()),
-                blankToNull(event.publicTransactionReference()), blankToNull(event.publicTransactionReference()),
-                blankToNull(event.publicTransactionReference()), blankToNull(event.publicTransactionReference())
+                """);
+        List<Object> arguments = new java.util.ArrayList<>();
+        arguments.add(connectionId);
+        if (idempotencyKey != null) {
+            sql.append(" AND operation.idempotency_key = ?");
+            arguments.add(idempotencyKey);
+            List<String> identityMatches = identityReferenceMatches(
+                    providerReference, merchantReference, arguments
+            );
+            if (!identityMatches.isEmpty()) {
+                sql.append(" AND (").append(String.join(" OR ", identityMatches)).append(')');
+            }
+        } else {
+            List<String> referenceMatches = new java.util.ArrayList<>();
+            if (providerReference != null) {
+                referenceMatches.add("operation.provider_reference = ?");
+                arguments.add(providerReference);
+            }
+            if (merchantReference != null) {
+                referenceMatches.add("operation.payment_intent_id = ?");
+                arguments.add(merchantReference);
+                referenceMatches.add("operation.operation_id = ?");
+                arguments.add(merchantReference);
+                referenceMatches.add("operation.provider_reference = ?");
+                arguments.add(merchantReference);
+                referenceMatches.add("operation.public_transaction_reference = ?");
+                arguments.add(merchantReference);
+            }
+            if (referenceMatches.isEmpty()) {
+                return null;
+            }
+            sql.append(" AND (").append(String.join(" OR ", referenceMatches)).append(')');
+        }
+        if (amount != null) {
+            sql.append(" AND operation.amount = ?");
+            arguments.add(amount);
+        }
+        if (currency != null) {
+            sql.append(" AND operation.currency = ?");
+            arguments.add(currency);
+        }
+        sql.append(" ORDER BY operation.created_at DESC LIMIT 2");
+        List<OperationMatch> matches = jdbcTemplate.query(
+                sql.toString(), this::mapOperationMatch, arguments.toArray()
+        );
+        return uniqueOperation(matches);
+    }
+
+    private OperationMatch findByExactPublicReference(
+            UUID connectionId,
+            String publicReference,
+            java.math.BigDecimal amount,
+            String currency
+    ) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT operation.id, operation.amount, operation.currency, operation.idempotency_key
+                  FROM payment_gateway.gateway_operation operation
+                  JOIN payment_gateway.payment_route route ON route.id = operation.route_id
+                 WHERE route.connection_id = ?
+                   AND operation.status IN ('PENDING_RECONCILIATION', 'ACTION_REQUIRED')
+                   AND operation.public_transaction_reference = ?
+                """);
+        List<Object> arguments = new java.util.ArrayList<>();
+        arguments.add(connectionId);
+        arguments.add(publicReference);
+        if (amount != null) {
+            sql.append(" AND operation.amount = ?");
+            arguments.add(amount);
+        }
+        if (currency != null) {
+            sql.append(" AND operation.currency = ?");
+            arguments.add(currency);
+        }
+        sql.append(" ORDER BY operation.created_at DESC LIMIT 2");
+        return uniqueOperation(jdbcTemplate.query(
+                sql.toString(), this::mapOperationMatch, arguments.toArray()
         ));
+    }
+
+    private List<String> identityReferenceMatches(
+            String providerReference,
+            String merchantReference,
+            List<Object> arguments
+    ) {
+        List<String> matches = new java.util.ArrayList<>();
+        if (providerReference != null) {
+            matches.add("operation.provider_reference = ?");
+            arguments.add(providerReference);
+        }
+        if (merchantReference != null) {
+            matches.add("operation.payment_intent_id = ?");
+            arguments.add(merchantReference);
+            matches.add("operation.operation_id = ?");
+            arguments.add(merchantReference);
+            matches.add("operation.provider_reference = ?");
+            arguments.add(merchantReference);
+            matches.add("operation.public_transaction_reference = ?");
+            arguments.add(merchantReference);
+        }
+        return matches;
+    }
+
+    private OperationMatch findRefundOperation(UUID connectionId, GatewayWebhookEvent event) {
+        String invoiceNo = blankToNull(event.providerReference());
+        String refundReference = blankToNull(event.publicTransactionReference());
+        String idempotencyKey = blankToNull(event.idempotencyKey());
+        java.math.BigDecimal amount = event.amount();
+        String currency = blankToNull(event.currency());
+        if (invoiceNo == null || refundReference == null || amount == null) {
+            return null;
+        }
+        StringBuilder sql = new StringBuilder("""
+                SELECT operation.id, operation.amount, operation.currency, operation.idempotency_key
+                  FROM payment_gateway.gateway_operation operation
+                  JOIN payment_gateway.payment_route route ON route.id = operation.route_id
+                 WHERE route.connection_id = ?
+                   AND operation.status IN ('PENDING_RECONCILIATION', 'ACTION_REQUIRED')
+                   AND operation.operation_type = 'REFUND'
+                   AND operation.provider_reference = ?
+                   AND operation.public_transaction_reference = ?
+                   AND operation.amount = ?
+                """);
+        List<Object> arguments = new java.util.ArrayList<>();
+        arguments.add(connectionId);
+        arguments.add(invoiceNo);
+        arguments.add(refundReference);
+        arguments.add(amount);
+        if (currency != null) {
+            sql.append(" AND operation.currency = ?");
+            arguments.add(currency);
+        }
+        if (idempotencyKey != null) {
+            sql.append(" AND operation.idempotency_key = ?");
+            arguments.add(idempotencyKey);
+        }
+        sql.append(" ORDER BY operation.created_at DESC LIMIT 2");
+        List<OperationMatch> matches = jdbcTemplate.query(
+                sql.toString(), this::mapOperationMatch, arguments.toArray()
+        );
+        return uniqueOperation(matches);
+    }
+
+    private OperationMatch uniqueOperation(List<OperationMatch> matches) {
+        if (matches.size() > 1) {
+            throw new GatewayWebhookVerificationException(
+                    "GATEWAY_WEBHOOK_OPERATION_AMBIGUOUS",
+                    "The verified webhook matches more than one pending gateway operation."
+            );
+        }
+        return DataAccessUtils.singleResult(matches);
+    }
+
+    private OperationMatch mapOperationMatch(ResultSet rs, int rowNum) throws SQLException {
+        return new OperationMatch(
+                rs.getObject("id", UUID.class),
+                rs.getBigDecimal("amount"),
+                rs.getString("currency"),
+                rs.getString("idempotency_key")
+        );
+    }
+
+    private void validateStableFields(OperationMatch operation, GatewayWebhookEvent event) {
+        if (operation == null) {
+            return;
+        }
+        if (event.amount() != null && operation.amount() != null
+                && event.amount().compareTo(operation.amount()) != 0) {
+            throw new GatewayWebhookVerificationException(
+                    "GATEWAY_WEBHOOK_AMOUNT_MISMATCH",
+                    "The signed provider amount does not match the stored gateway operation."
+            );
+        }
+        if (event.currency() != null && operation.currency() != null
+                && !event.currency().equalsIgnoreCase(operation.currency())) {
+            throw new GatewayWebhookVerificationException(
+                    "GATEWAY_WEBHOOK_CURRENCY_MISMATCH",
+                    "The signed provider currency does not match the stored gateway operation."
+            );
+        }
+        if (event.idempotencyKey() != null && operation.idempotencyKey() != null
+                && !event.idempotencyKey().equals(operation.idempotencyKey())) {
+            throw new GatewayWebhookVerificationException(
+                    "GATEWAY_WEBHOOK_IDEMPOTENCY_MISMATCH",
+                    "The signed provider idempotency key does not match the stored gateway operation."
+            );
+        }
     }
 
     private boolean applyOutcome(UUID operationId, GatewayWebhookEvent event) {
@@ -258,5 +445,8 @@ public class GatewayWebhookService {
     }
 
     private record OperationRow(String operationType, String status) {
+    }
+
+    private record OperationMatch(UUID id, java.math.BigDecimal amount, String currency, String idempotencyKey) {
     }
 }

@@ -24,7 +24,7 @@ final class ProviderSecretReferencePolicy {
         );
         if (provider == GatewayProvider.TWO_C2P
                 && TWO_C2P_DEMO_PROFILE.equalsIgnoreCase(normalizedEndpointProfile(endpointProfile))
-                && references.credential() != null) {
+                && (references.credential() != null || references.certificate() != null)) {
             throw notApproved(provider);
         }
         return references;
@@ -43,7 +43,7 @@ final class ProviderSecretReferencePolicy {
         String expected = expected(provider, purpose);
         if (expected == null || !expected.equals(normalized)
                 || (provider == GatewayProvider.TWO_C2P
-                && purpose == Purpose.CREDENTIAL
+                && (purpose == Purpose.CREDENTIAL || purpose == Purpose.CERTIFICATE)
                 && TWO_C2P_DEMO_PROFILE.equalsIgnoreCase(normalizedEndpointProfile(endpointProfile)))) {
             throw notApproved(provider);
         }
@@ -66,7 +66,9 @@ final class ProviderSecretReferencePolicy {
                 case ADYEN -> "env:APP_GATEWAY_ADYEN_WEBHOOK_SECRET";
                 case MOCK, MOLLIE, TWO_C2P -> null;
             };
-            case CERTIFICATE -> null;
+            case CERTIFICATE -> provider == GatewayProvider.TWO_C2P
+                    ? "env:APP_GATEWAY_2C2P_CERTIFICATE"
+                    : null;
         };
     }
 

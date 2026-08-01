@@ -460,7 +460,9 @@ public final class GatewayContracts {
             String idempotencyKey,
             String providerReference,
             GatewayOperationType operationType,
-            String publicTransactionReference
+            String publicTransactionReference,
+            BigDecimal amount,
+            String currency
     ) {
         public GatewayOperationStatusQuery(
                 UUID gatewayOperationId,
@@ -468,7 +470,19 @@ public final class GatewayContracts {
                 String idempotencyKey,
                 String providerReference
         ) {
-            this(gatewayOperationId, operationId, idempotencyKey, providerReference, null, null);
+            this(gatewayOperationId, operationId, idempotencyKey, providerReference, null, null, null, null);
+        }
+
+        public GatewayOperationStatusQuery(
+                UUID gatewayOperationId,
+                String operationId,
+                String idempotencyKey,
+                String providerReference,
+                GatewayOperationType operationType,
+                String publicTransactionReference
+        ) {
+            this(gatewayOperationId, operationId, idempotencyKey, providerReference,
+                    operationType, publicTransactionReference, null, null);
         }
     }
 
@@ -481,8 +495,24 @@ public final class GatewayContracts {
             @Size(max = 160) String publicTransactionReference,
             @NotNull GatewayWebhookOutcome outcome,
             @NotBlank @Size(max = 96) String code,
-            Instant occurredAt
+            Instant occurredAt,
+            BigDecimal amount,
+            String currency,
+            String idempotencyKey
     ) {
+        public GatewayWebhookEvent(
+                String providerEventId,
+                String eventType,
+                String providerReference,
+                String merchantReference,
+                String publicTransactionReference,
+                GatewayWebhookOutcome outcome,
+                String code,
+                Instant occurredAt
+        ) {
+            this(providerEventId, eventType, providerReference, merchantReference,
+                    publicTransactionReference, outcome, code, occurredAt, null, null, null);
+        }
     }
 
     public record GatewayWebhookReceipt(

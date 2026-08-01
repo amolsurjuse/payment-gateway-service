@@ -12,18 +12,29 @@ import com.electrahub.paymentgateway.service.spi.GatewayWebhookVerificationExcep
 import com.electrahub.paymentgateway.service.spi.PaymentGatewayAdapter;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.math.BigDecimal;
+import java.sql.ResultSet;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -82,6 +93,174 @@ class GatewayWebhookServiceTest {
         verifyNoInteractions(fixture.jdbcTemplate, fixture.transactionTemplate);
     }
 
+    @Test
+    void rejectsSignedWebhookAmountMismatchBeforeDurableIngestion() {
+        assertStableFieldMismatch(
+                new GatewayWebhookEvent(
+                        "2c2p-refund-1", "REFUND", "invoice-1", "invoice-1", "refund-1",
+                        GatewayWebhookOutcome.REFUNDED, "RF", Instant.now(),
+                        new BigDecimal("10.01"), "USD", "refund-idem-1"
+                ),
+                "GATEWAY_WEBHOOK_AMOUNT_MISMATCH"
+        );
+    }
+
+    @Test
+    void rejectsSignedWebhookCurrencyMismatchBeforeDurableIngestion() {
+        assertStableFieldMismatch(
+                new GatewayWebhookEvent(
+                        "2c2p-refund-1", "REFUND", "invoice-1", "invoice-1", "refund-1",
+                        GatewayWebhookOutcome.REFUNDED, "RF", Instant.now(),
+                        new BigDecimal("10.00"), "EUR", "refund-idem-1"
+                ),
+                "GATEWAY_WEBHOOK_CURRENCY_MISMATCH"
+        );
+    }
+
+    @Test
+    void rejectsSignedWebhookIdempotencyMismatchBeforeDurableIngestion() {
+        assertStableFieldMismatch(
+                new GatewayWebhookEvent(
+                        "2c2p-refund-1", "REFUND", "invoice-1", "invoice-1", "refund-1",
+                        GatewayWebhookOutcome.REFUNDED, "RF", Instant.now(),
+                        new BigDecimal("10.00"), "USD", "different-refund-idem"
+                ),
+                "GATEWAY_WEBHOOK_IDEMPOTENCY_MISMATCH"
+        );
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void correlatesRefundWithoutOptionalIdempotencyByExactStableFields() {
+        Fixture fixture = fixture();
+        GatewayConnection connection = connection(GatewayProvider.TWO_C2P);
+        GatewayWebhookEvent event = new GatewayWebhookEvent(
+                "2c2p-refund-no-idem", "payment.maintenance.refund",
+                "invoice-1", "invoice-1", "refund-1",
+                GatewayWebhookOutcome.REFUNDED, "REFUNDED", Instant.now(),
+                new BigDecimal("10.00"), "USD", null
+        );
+        when(fixture.configurationService.requireConnection(connection.id())).thenReturn(connection);
+        when(fixture.registry.find(GatewayProvider.TWO_C2P)).thenReturn(Optional.of(fixture.adapter));
+        when(fixture.adapter.parseWebhooks(connection, "signed-body", Map.of())).thenReturn(List.of(event));
+        executeTransactions(fixture);
+        AtomicReference<String> correlationSql = new AtomicReference<>();
+        AtomicReference<Object[]> correlationArguments = new AtomicReference<>();
+        doAnswer(invocation -> {
+            String sql = invocation.getArgument(0);
+            RowMapper<?> mapper = invocation.getArgument(1);
+            ResultSet resultSet = mock(ResultSet.class);
+            if (sql.contains("operation.operation_type = 'REFUND'")) {
+                correlationSql.set(sql);
+                correlationArguments.set(java.util.Arrays.copyOfRange(
+                        invocation.getArguments(), 2, invocation.getArguments().length
+                ));
+                stubOperationMatch(resultSet, UUID.randomUUID(), "10.00", "USD", "refund-idem-1");
+            } else {
+                when(resultSet.getString("operation_type")).thenReturn("REFUND");
+                when(resultSet.getString("status")).thenReturn("PENDING_RECONCILIATION");
+            }
+            return List.of(mapper.mapRow(resultSet, 0));
+        }).when(fixture.jdbcTemplate).query(anyString(), any(RowMapper.class), any(Object[].class));
+        when(fixture.jdbcTemplate.update(anyString(), any(Object[].class))).thenReturn(1);
+
+        var receipt = fixture.service.receive(connection.id(), "signed-body", Map.of());
+
+        assertThat(receipt.applied()).isEqualTo(1);
+        assertThat(correlationSql.get())
+                .contains("operation.operation_type = 'REFUND'")
+                .contains("operation.provider_reference = ?")
+                .contains("operation.public_transaction_reference = ?")
+                .contains("operation.amount = ?")
+                .contains("operation.currency = ?")
+                .contains("LIMIT 2");
+        assertThat(correlationArguments.get()).contains(
+                "invoice-1", "refund-1", new BigDecimal("10.00"), "USD"
+        );
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void rejectsAmbiguousConcurrentRefundCandidatesBeforeIngestion() {
+        Fixture fixture = fixture();
+        GatewayConnection connection = connection(GatewayProvider.TWO_C2P);
+        GatewayWebhookEvent event = new GatewayWebhookEvent(
+                "2c2p-refund-ambiguous", "payment.maintenance.refund",
+                "invoice-1", "invoice-1", "refund-1",
+                GatewayWebhookOutcome.REFUNDED, "REFUNDED", Instant.now(),
+                new BigDecimal("10.00"), "USD", null
+        );
+        when(fixture.configurationService.requireConnection(connection.id())).thenReturn(connection);
+        when(fixture.registry.find(GatewayProvider.TWO_C2P)).thenReturn(Optional.of(fixture.adapter));
+        when(fixture.adapter.parseWebhooks(connection, "signed-body", Map.of())).thenReturn(List.of(event));
+        executeTransactions(fixture);
+        doAnswer(invocation -> {
+            RowMapper<?> mapper = invocation.getArgument(1);
+            ResultSet first = mock(ResultSet.class);
+            ResultSet second = mock(ResultSet.class);
+            stubOperationMatch(first, UUID.randomUUID(), "10.00", "USD", "refund-idem-1");
+            stubOperationMatch(second, UUID.randomUUID(), "10.00", "USD", "refund-idem-2");
+            return List.of(mapper.mapRow(first, 0), mapper.mapRow(second, 1));
+        }).when(fixture.jdbcTemplate).query(anyString(), any(RowMapper.class), any(Object[].class));
+
+        assertThatThrownBy(() -> fixture.service.receive(connection.id(), "signed-body", Map.of()))
+                .isInstanceOfSatisfying(GatewayWebhookVerificationException.class, exception ->
+                        assertThat(exception.code()).isEqualTo("GATEWAY_WEBHOOK_OPERATION_AMBIGUOUS")
+                );
+
+        verify(fixture.jdbcTemplate, never()).update(anyString(), any(Object[].class));
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void assertStableFieldMismatch(GatewayWebhookEvent event, String expectedCode) {
+        Fixture fixture = fixture();
+        GatewayConnection connection = connection(GatewayProvider.TWO_C2P);
+        when(fixture.configurationService.requireConnection(connection.id())).thenReturn(connection);
+        when(fixture.registry.find(GatewayProvider.TWO_C2P)).thenReturn(Optional.of(fixture.adapter));
+        when(fixture.adapter.parseWebhooks(connection, "signed-body", Map.of())).thenReturn(List.of(event));
+        doAnswer(invocation -> {
+            TransactionCallback<?> callback = invocation.getArgument(0);
+            return callback.doInTransaction(mock(TransactionStatus.class));
+        }).when(fixture.transactionTemplate).execute(any(TransactionCallback.class));
+        doAnswer(invocation -> {
+            RowMapper<?> mapper = invocation.getArgument(1);
+            ResultSet resultSet = mock(ResultSet.class);
+            when(resultSet.getObject("id", UUID.class)).thenReturn(UUID.randomUUID());
+            when(resultSet.getBigDecimal("amount")).thenReturn(new BigDecimal("10.00"));
+            when(resultSet.getString("currency")).thenReturn("USD");
+            when(resultSet.getString("idempotency_key")).thenReturn("refund-idem-1");
+            return List.of(mapper.mapRow(resultSet, 0));
+        }).when(fixture.jdbcTemplate).query(anyString(), any(RowMapper.class), any(Object[].class));
+
+        assertThatThrownBy(() -> fixture.service.receive(connection.id(), "signed-body", Map.of()))
+                .isInstanceOfSatisfying(GatewayWebhookVerificationException.class, exception ->
+                        assertThat(exception.code()).isEqualTo(expectedCode)
+                );
+
+        verify(fixture.jdbcTemplate, never()).update(anyString(), any(Object[].class));
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void executeTransactions(Fixture fixture) {
+        doAnswer(invocation -> {
+            TransactionCallback<?> callback = invocation.getArgument(0);
+            return callback.doInTransaction(mock(TransactionStatus.class));
+        }).when(fixture.transactionTemplate).execute(any(TransactionCallback.class));
+    }
+
+    private void stubOperationMatch(
+            ResultSet resultSet,
+            UUID id,
+            String amount,
+            String currency,
+            String idempotencyKey
+    ) throws Exception {
+        when(resultSet.getObject("id", UUID.class)).thenReturn(id);
+        when(resultSet.getBigDecimal("amount")).thenReturn(new BigDecimal(amount));
+        when(resultSet.getString("currency")).thenReturn(currency);
+        when(resultSet.getString("idempotency_key")).thenReturn(idempotencyKey);
+    }
+
     private Fixture fixture() {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         GatewayConfigurationService configurationService = mock(GatewayConfigurationService.class);
@@ -95,9 +274,13 @@ class GatewayWebhookServiceTest {
     }
 
     private GatewayConnection connection() {
+        return connection(GatewayProvider.STRIPE);
+    }
+
+    private GatewayConnection connection(GatewayProvider provider) {
         Instant now = Instant.now();
         return new GatewayConnection(
-                UUID.randomUUID(), GatewayProvider.STRIPE, GatewayEnvironment.SANDBOX,
+                UUID.randomUUID(), provider, GatewayEnvironment.SANDBOX,
                 GatewayConnectionStatus.ACTIVE, "2026-07", "test", Set.of(),
                 true, true, false, now, now, null, 1, now, now
         );

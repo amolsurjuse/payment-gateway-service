@@ -215,7 +215,7 @@ public class GatewayOperationService {
                         new com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationStatusQuery(
                                 operation.id(), operation.operationId(), operation.idempotencyKey(),
                                 operation.providerReference(), operation.operationType(),
-                                operation.publicTransactionReference()),
+                                operation.publicTransactionReference(), operation.amount(), operation.currency()),
                         candidate.connection()
                 );
                 if (providerStatus.status() == GatewayOperationStatus.PENDING_RECONCILIATION) {
@@ -297,7 +297,8 @@ public class GatewayOperationService {
                  WHERE operation.id = due.id
                 RETURNING operation.id, operation.route_id, operation.operation_id, operation.idempotency_key,
                           operation.provider_reference, operation.operation_type,
-                          operation.public_transaction_reference, operation.recovery_attempt_count
+                          operation.public_transaction_reference, operation.amount, operation.currency,
+                          operation.recovery_attempt_count
                 """,
                 this::mapRecoveryRecord,
                 offset(now),
@@ -382,7 +383,7 @@ public class GatewayOperationService {
                 new com.electrahub.paymentgateway.domain.GatewayContracts.GatewayOperationStatusQuery(
                         operation.id(), operation.operationId(), operation.idempotencyKey(),
                         operation.providerReference(), operation.operationType(),
-                        operation.publicTransactionReference()
+                        operation.publicTransactionReference(), operation.amount(), operation.currency()
                 ),
                 candidate.connection()
         );
@@ -409,7 +410,7 @@ public class GatewayOperationService {
         return DataAccessUtils.singleResult(jdbcTemplate.query(
                 """
                 SELECT id, route_id, operation_id, idempotency_key, provider_reference, operation_type,
-                       public_transaction_reference, recovery_attempt_count
+                       public_transaction_reference, amount, currency, recovery_attempt_count
                   FROM payment_gateway.gateway_operation
                  WHERE id = ?
                 """,
@@ -508,6 +509,8 @@ public class GatewayOperationService {
                 rs.getString("provider_reference"),
                 GatewayOperationType.valueOf(rs.getString("operation_type")),
                 rs.getString("public_transaction_reference"),
+                rs.getBigDecimal("amount"),
+                rs.getString("currency"),
                 rs.getInt("recovery_attempt_count")
         );
     }
@@ -576,6 +579,8 @@ public class GatewayOperationService {
             String providerReference,
             GatewayOperationType operationType,
             String publicTransactionReference,
+            BigDecimal amount,
+            String currency,
             int recoveryAttemptCount
     ) {
     }

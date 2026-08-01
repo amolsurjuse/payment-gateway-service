@@ -3,6 +3,7 @@ package com.electrahub.paymentgateway.service;
 import com.electrahub.paymentgateway.config.GatewayProperties;
 import com.electrahub.paymentgateway.domain.GatewayContracts.CreatePaymentRouteRequest;
 import com.electrahub.paymentgateway.domain.GatewayContracts.CreateGatewayConnectionRequest;
+import com.electrahub.paymentgateway.domain.GatewayContracts.ConnectionValidation;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayConnection;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayConnectionStatus;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayCapability;
@@ -11,19 +12,30 @@ import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayProvider;
 import com.electrahub.paymentgateway.domain.GatewayContracts.PaymentChannel;
 import com.electrahub.paymentgateway.domain.GatewayContracts.PaymentMethodType;
 import com.electrahub.paymentgateway.service.spi.GatewayBusinessException;
+import com.electrahub.paymentgateway.service.spi.PaymentGatewayAdapter;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
 
+import java.sql.ResultSet;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 
 class GatewayConfigurationServiceTest {
 
@@ -156,8 +168,111 @@ class GatewayConfigurationServiceTest {
     }
 
     @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void privateTwoC2PActivationRevalidatesAndRejectsAProtectedProbeFailure() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        PaymentGatewayRegistry registry = mock(PaymentGatewayRegistry.class);
+        PaymentGatewayAdapter adapter = mock(PaymentGatewayAdapter.class);
+        GatewayConfigurationService service = spy(new GatewayConfigurationService(
+                jdbcTemplate,
+                registry,
+                new GatewayRouteCache(properties(false)),
+                new ProductionProviderMutationGuard(properties(false))
+        ));
+        Instant now = Instant.now();
+        GatewayConnection connection = new GatewayConnection(
+                UUID.randomUUID(), GatewayProvider.TWO_C2P, GatewayEnvironment.SANDBOX,
+                GatewayConnectionStatus.READY, "2c2p-v4.3", "2c2p-sandbox", Set.of(),
+                true, false, true, now, now, null, 1, now, now
+        );
+        doReturn(connection).when(service).requireConnection(connection.id());
+        doAnswer(invocation -> {
+            RowMapper<?> mapper = invocation.getArgument(1);
+            ResultSet resultSet = mock(ResultSet.class);
+            when(resultSet.getString("credential_secret_reference"))
+                    .thenReturn("env:APP_GATEWAY_2C2P_CREDENTIAL");
+            when(resultSet.getString("webhook_secret_reference")).thenReturn(null);
+            when(resultSet.getString("certificate_secret_reference"))
+                    .thenReturn("env:APP_GATEWAY_2C2P_CERTIFICATE");
+            return List.of(mapper.mapRow(resultSet, 0));
+        }).when(jdbcTemplate).query(anyString(), any(RowMapper.class), any(Object[].class));
+        when(registry.find(GatewayProvider.TWO_C2P)).thenReturn(Optional.of(adapter));
+        when(adapter.requiresCredential(connection)).thenReturn(true);
+        when(adapter.validate(connection)).thenReturn(new ConnectionValidation(
+                false,
+                "TWO_C2P_MAINTENANCE_PROBE_REJECTED",
+                "2C2P rejected the protected sandbox maintenance probe.",
+                Set.of(),
+                "2c2p-v4.3"
+        ));
+
+        assertThatThrownBy(() -> service.activateConnection(connection.id(), UUID.randomUUID()))
+                .isInstanceOfSatisfying(GatewayBusinessException.class, exception ->
+                        org.assertj.core.api.Assertions.assertThat(exception.code())
+                                .isEqualTo("TWO_C2P_MAINTENANCE_PROBE_REJECTED")
+                );
+
+        verify(adapter).validate(connection);
+        verify(jdbcTemplate, never()).update(anyString(), any(Object[].class));
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void privateTwoC2PActivationRequiresManualCaptureCapabilitiesFromRevalidation() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        PaymentGatewayRegistry registry = mock(PaymentGatewayRegistry.class);
+        PaymentGatewayAdapter adapter = mock(PaymentGatewayAdapter.class);
+        GatewayConfigurationService service = spy(new GatewayConfigurationService(
+                jdbcTemplate,
+                registry,
+                new GatewayRouteCache(properties(false)),
+                new ProductionProviderMutationGuard(properties(false))
+        ));
+        Instant now = Instant.now();
+        GatewayConnection connection = new GatewayConnection(
+                UUID.randomUUID(), GatewayProvider.TWO_C2P, GatewayEnvironment.SANDBOX,
+                GatewayConnectionStatus.READY, "2c2p-v4.3", "2c2p-sandbox", Set.of(),
+                true, false, true, now, now, null, 1, now, now
+        );
+        doReturn(connection).when(service).requireConnection(connection.id());
+        doAnswer(invocation -> {
+            RowMapper<?> mapper = invocation.getArgument(1);
+            ResultSet resultSet = mock(ResultSet.class);
+            when(resultSet.getString("credential_secret_reference"))
+                    .thenReturn("env:APP_GATEWAY_2C2P_CREDENTIAL");
+            when(resultSet.getString("webhook_secret_reference")).thenReturn(null);
+            when(resultSet.getString("certificate_secret_reference"))
+                    .thenReturn("env:APP_GATEWAY_2C2P_CERTIFICATE");
+            return List.of(mapper.mapRow(resultSet, 0));
+        }).when(jdbcTemplate).query(anyString(), any(RowMapper.class), any(Object[].class));
+        when(registry.find(GatewayProvider.TWO_C2P)).thenReturn(Optional.of(adapter));
+        when(adapter.requiresCredential(connection)).thenReturn(true);
+        when(adapter.validate(connection)).thenReturn(new ConnectionValidation(
+                true,
+                "READY",
+                "Payment credentials validated without maintenance proof.",
+                Set.of(GatewayCapability.AUTHORIZE, GatewayCapability.STATUS_QUERY),
+                "2c2p-v4.3"
+        ));
+
+        assertThatThrownBy(() -> service.activateConnection(connection.id(), UUID.randomUUID()))
+                .isInstanceOfSatisfying(GatewayBusinessException.class, exception ->
+                        org.assertj.core.api.Assertions.assertThat(exception.code())
+                                .isEqualTo("TWO_C2P_MAINTENANCE_CAPABILITIES_REQUIRED")
+                );
+
+        verify(adapter).validate(connection);
+        verify(jdbcTemplate, never()).update(anyString(), any(Object[].class));
+    }
+
+    @Test
     void acceptsHostedCheckoutOnlyForCustomerInteractiveProviders() {
-        for (GatewayProvider provider : Set.of(GatewayProvider.MOLLIE, GatewayProvider.ADYEN, GatewayProvider.RAZORPAY)) {
+        for (GatewayProvider provider : Set.of(
+                GatewayProvider.MOLLIE,
+                GatewayProvider.ADYEN,
+                GatewayProvider.RAZORPAY,
+                GatewayProvider.TWO_C2P
+        )) {
             org.assertj.core.api.Assertions.assertThatCode(() ->
                     GatewayConfigurationService.requirePaymentMethodSupported(
                             provider,
@@ -187,16 +302,25 @@ class GatewayConfigurationServiceTest {
     }
 
     @Test
-    void keepsTwoC2PExcludedUntilMaintenanceExchangeIsImplemented() {
-        for (PaymentMethodType paymentMethod : PaymentMethodType.values()) {
-            assertThatThrownBy(() -> GatewayConfigurationService.requirePaymentMethodSupported(
-                    GatewayProvider.TWO_C2P,
-                    paymentMethod
-            )).isInstanceOfSatisfying(GatewayBusinessException.class, exception ->
-                    org.assertj.core.api.Assertions.assertThat(exception.code())
-                            .isEqualTo("PAYMENT_METHOD_NOT_SUPPORTED")
-            );
-        }
+    void keepsPublicTwoC2PDemoCapabilitiesRouteIneligible() {
+        org.assertj.core.api.Assertions.assertThatCode(() ->
+                GatewayConfigurationService.requirePaymentMethodSupported(
+                        GatewayProvider.TWO_C2P,
+                        PaymentMethodType.HOSTED_CHECKOUT
+                )
+        ).doesNotThrowAnyException();
+
+        assertThatThrownBy(() -> GatewayConfigurationService.requirePaymentMethodCapabilities(
+                PaymentMethodType.HOSTED_CHECKOUT,
+                Set.of(
+                        GatewayCapability.AUTHORIZE,
+                        GatewayCapability.STATUS_QUERY,
+                        GatewayCapability.THREE_DS_SCA
+                )
+        )).isInstanceOfSatisfying(GatewayBusinessException.class, exception ->
+                org.assertj.core.api.Assertions.assertThat(exception.code())
+                        .isEqualTo("PAYMENT_METHOD_NOT_SUPPORTED")
+        );
     }
 
     @Test

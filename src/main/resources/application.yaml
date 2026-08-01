@@ -58,6 +58,7 @@ app:
         test-base-url: ${APP_GATEWAY_ADYEN_TEST_BASE_URL:https://checkout-test.adyen.com/v72}
       two-c2p:
         base-url: ${APP_GATEWAY_2C2P_BASE_URL:https://sandbox-pgw.2c2p.com}
+        maintenance-base-url: ${APP_GATEWAY_2C2P_MAINTENANCE_BASE_URL:https://demo2.2c2p.com}
         demo-merchant-id: ${APP_GATEWAY_2C2P_DEMO_MERCHANT_ID:JT01}
         demo-secret-key: ${APP_GATEWAY_2C2P_DEMO_SECRET_KEY:}
         webhook-base-url: ${APP_GATEWAY_2C2P_WEBHOOK_BASE_URL:}

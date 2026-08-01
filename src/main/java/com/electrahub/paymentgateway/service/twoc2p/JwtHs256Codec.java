@@ -38,6 +38,14 @@ final class JwtHs256Codec {
         if (segments.length != 3) {
             throw invalidResponse();
         }
+        try {
+            JsonNode header = objectMapper.readTree(Base64.getUrlDecoder().decode(segments[0]));
+            if (!"HS256".equals(header.path("alg").asText())) {
+                throw invalidResponse();
+            }
+        } catch (IllegalArgumentException | IOException exception) {
+            throw invalidResponse();
+        }
         String signingInput = segments[0] + "." + segments[1];
         byte[] expected = hmac(signingInput, secretKey);
         byte[] actual;

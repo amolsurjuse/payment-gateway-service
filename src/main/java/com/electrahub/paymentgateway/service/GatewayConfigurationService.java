@@ -222,16 +222,35 @@ public class GatewayConfigurationService {
                     "Configure and validate the Adyen webhook HMAC secret before activation."
             );
         }
+        boolean privateTwoC2PSandbox = existing.provider() == GatewayProvider.TWO_C2P
+                && existing.environment() == GatewayEnvironment.SANDBOX
+                && "2c2p-sandbox".equalsIgnoreCase(existing.endpointProfile());
+        if (privateTwoC2PSandbox && !existing.certificateConfigured()) {
+            throw new GatewayBusinessException(
+                    "TWO_C2P_CERTIFICATE_REQUIRED",
+                    "Configure and validate the 2C2P merchant private key and provider certificate before activation."
+            );
+        }
         requireApprovedStoredSecretReferences(existing);
         PaymentGatewayAdapter adapter = adapterRegistry.find(existing.provider())
                 .orElseThrow(() -> new GatewayBusinessException("ADAPTER_NOT_INSTALLED", "No installed adapter supports this provider."));
         if (adapter.requiresCredential(existing) && !existing.credentialConfigured()) {
             throw new GatewayBusinessException("GATEWAY_CREDENTIAL_NOT_CONFIGURED", "A credential secret reference is required before activating this provider connection.");
         }
-        if (existing.provider() == GatewayProvider.ADYEN) {
+        if (existing.provider() == GatewayProvider.ADYEN || privateTwoC2PSandbox) {
             ConnectionValidation activationValidation = adapter.validate(existing);
             if (!activationValidation.valid()) {
                 throw new GatewayBusinessException(activationValidation.code(), activationValidation.message());
+            }
+            if (privateTwoC2PSandbox && !activationValidation.capabilities().containsAll(Set.of(
+                    GatewayCapability.AUTHORIZE,
+                    GatewayCapability.MANUAL_CAPTURE,
+                    GatewayCapability.CAPTURE
+            ))) {
+                throw new GatewayBusinessException(
+                        "TWO_C2P_MAINTENANCE_CAPABILITIES_REQUIRED",
+                        "2C2P activation requires a validation transaction that proves authorize, manual-capture, and capture capabilities."
+                );
             }
         }
         if (existing.provider() == GatewayProvider.MOCK && existing.environment() == GatewayEnvironment.PRODUCTION) {
@@ -553,7 +572,7 @@ public class GatewayConfigurationService {
     static void requirePaymentMethodSupported(GatewayProvider provider, PaymentMethodType paymentMethod) {
         boolean supported = switch (provider) {
             case MOLLIE, ADYEN, RAZORPAY -> paymentMethod == PaymentMethodType.HOSTED_CHECKOUT;
-            case TWO_C2P -> false;
+            case TWO_C2P -> paymentMethod == PaymentMethodType.HOSTED_CHECKOUT;
             case MOCK, STRIPE -> paymentMethod == PaymentMethodType.CARD_ON_FILE;
         };
         if (!supported) {

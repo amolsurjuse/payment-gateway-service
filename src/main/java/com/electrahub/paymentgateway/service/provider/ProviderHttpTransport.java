@@ -56,6 +56,15 @@ public class ProviderHttpTransport {
         return send(builder.build());
     }
 
+    public Response postText(URI uri, Map<String, String> headers, String body) {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
+                .timeout(requestTimeout)
+                .header("Content-Type", "text/plain")
+                .POST(HttpRequest.BodyPublishers.ofString(body));
+        headers.forEach(builder::header);
+        return send(builder.build());
+    }
+
     public Response delete(URI uri, Map<String, String> headers) {
         HttpRequest.Builder builder = HttpRequest.newBuilder(uri).DELETE().timeout(requestTimeout);
         headers.forEach(builder::header);

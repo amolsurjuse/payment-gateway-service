@@ -9,5 +9,12 @@ public interface ProviderCredentialResolver {
 
     String requireCredential(GatewayConnection connection);
 
+    default String requireCertificate(GatewayConnection connection) {
+        throw new GatewayBusinessException(
+                "GATEWAY_CERTIFICATE_UNAVAILABLE",
+                "The configured provider certificate material is unavailable."
+        );
+    }
+
     Optional<String> webhookSecret(GatewayConnection connection);
 }

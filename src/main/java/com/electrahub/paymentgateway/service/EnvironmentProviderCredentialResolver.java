@@ -42,6 +42,15 @@ public class EnvironmentProviderCredentialResolver implements ProviderCredential
         return resolve(reference(connection, "webhook_secret_reference"));
     }
 
+    @Override
+    public String requireCertificate(GatewayConnection connection) {
+        return resolve(reference(connection, "certificate_secret_reference")).orElseThrow(() ->
+                new GatewayBusinessException(
+                        "GATEWAY_CERTIFICATE_UNAVAILABLE",
+                        "The configured provider certificate material is unavailable."
+                ));
+    }
+
     private String reference(GatewayConnection connection, String column) {
         if (connection == null || connection.id() == null) {
             return null;
@@ -55,6 +64,7 @@ public class EnvironmentProviderCredentialResolver implements ProviderCredential
             ProviderSecretReferencePolicy.Purpose purpose = switch (column) {
                 case "credential_secret_reference" -> ProviderSecretReferencePolicy.Purpose.CREDENTIAL;
                 case "webhook_secret_reference" -> ProviderSecretReferencePolicy.Purpose.WEBHOOK;
+                case "certificate_secret_reference" -> ProviderSecretReferencePolicy.Purpose.CERTIFICATE;
                 default -> throw new GatewayBusinessException(
                         "GATEWAY_SECRET_REFERENCE_INVALID", "The gateway secret purpose is invalid."
                 );

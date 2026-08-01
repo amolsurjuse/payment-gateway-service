@@ -33,7 +33,7 @@ class ProviderSecretReferencePolicyTest {
     }
 
     @Test
-    void keepsMollieWebhookAndAllUnusedCertificateReferencesBlank() {
+    void keepsMollieWebhookAndNonTwoC2PCertificateReferencesBlank() {
         assertNotApproved(GatewayProvider.MOLLIE, "mollie-sandbox", "env:APP_GATEWAY_MOLLIE_CREDENTIAL",
                 "env:APP_GATEWAY_MOLLIE_WEBHOOK_SECRET");
 
@@ -49,20 +49,59 @@ class ProviderSecretReferencePolicyTest {
     }
 
     @Test
-    void requiresThePublicTwoC2PDemoCredentialReferenceToStayBlank() {
-        assertThat(ProviderSecretReferencePolicy.requireApproved(
+    void acceptsOnlyCanonicalCredentialAndCertificateReferencesForPrivateTwoC2PSandbox() {
+        var references = ProviderSecretReferencePolicy.requireApproved(
+                GatewayProvider.TWO_C2P,
+                "2c2p-sandbox",
+                "  env:APP_GATEWAY_2C2P_CREDENTIAL  ",
+                null,
+                "  env:APP_GATEWAY_2C2P_CERTIFICATE  "
+        );
+
+        assertThat(references.credential()).isEqualTo("env:APP_GATEWAY_2C2P_CREDENTIAL");
+        assertThat(references.webhook()).isNull();
+        assertThat(references.certificate()).isEqualTo("env:APP_GATEWAY_2C2P_CERTIFICATE");
+
+        assertThatThrownBy(() -> ProviderSecretReferencePolicy.requireApproved(
+                GatewayProvider.TWO_C2P,
+                "2c2p-sandbox",
+                "env:APP_GATEWAY_2C2P_CREDENTIAL",
+                "env:APP_GATEWAY_2C2P_WEBHOOK_SECRET",
+                "env:APP_GATEWAY_2C2P_CERTIFICATE"
+        )).isInstanceOfSatisfying(GatewayBusinessException.class, exception ->
+                assertThat(exception.code()).isEqualTo("GATEWAY_SECRET_REFERENCE_NOT_APPROVED")
+        );
+    }
+
+    @Test
+    void requiresAllPublicTwoC2PDemoSecretReferencesToStayBlank() {
+        var references = ProviderSecretReferencePolicy.requireApproved(
                 GatewayProvider.TWO_C2P,
                 ProviderSecretReferencePolicy.TWO_C2P_DEMO_PROFILE,
                 null,
                 null,
                 null
-        ).credential()).isNull();
+        );
+
+        assertThat(references.credential()).isNull();
+        assertThat(references.webhook()).isNull();
+        assertThat(references.certificate()).isNull();
 
         assertNotApproved(
                 GatewayProvider.TWO_C2P,
                 "  " + ProviderSecretReferencePolicy.TWO_C2P_DEMO_PROFILE + "  ",
                 "env:APP_GATEWAY_2C2P_CREDENTIAL",
                 null
+        );
+
+        assertThatThrownBy(() -> ProviderSecretReferencePolicy.requireApproved(
+                GatewayProvider.TWO_C2P,
+                "  " + ProviderSecretReferencePolicy.TWO_C2P_DEMO_PROFILE + "  ",
+                null,
+                null,
+                "env:APP_GATEWAY_2C2P_CERTIFICATE"
+        )).isInstanceOfSatisfying(GatewayBusinessException.class, exception ->
+                assertThat(exception.code()).isEqualTo("GATEWAY_SECRET_REFERENCE_NOT_APPROVED")
         );
     }
 
