@@ -500,14 +500,35 @@ public class GatewayOperationService {
         );
     }
 
-    private void rejectRawPaymentData(String reference) {
+    static void rejectRawPaymentData(String reference) {
         if (reference == null || reference.isBlank()) {
             return;
         }
-        String digits = reference.replaceAll("\\D", "");
-        if (digits.length() >= 12 && digits.length() <= 19) {
+        String normalized = reference.trim();
+        if (!normalized.matches("[0-9 -]+")) {
+            return;
+        }
+        String digits = normalized.replaceAll("[ -]", "");
+        if (digits.length() >= 12 && digits.length() <= 19 && passesLuhnCheck(digits)) {
             throw new GatewayBusinessException("RAW_PAYMENT_DATA_FORBIDDEN", "Use a provider token, hosted checkout reference, or certified terminal reference.");
         }
+    }
+
+    private static boolean passesLuhnCheck(String digits) {
+        int sum = 0;
+        boolean doubleDigit = false;
+        for (int index = digits.length() - 1; index >= 0; index--) {
+            int digit = digits.charAt(index) - '0';
+            if (doubleDigit) {
+                digit *= 2;
+                if (digit > 9) {
+                    digit -= 9;
+                }
+            }
+            sum += digit;
+            doubleDigit = !doubleDigit;
+        }
+        return sum % 10 == 0;
     }
 
     private BigDecimal normalizeAmount(BigDecimal value) {
