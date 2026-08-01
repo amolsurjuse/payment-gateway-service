@@ -81,7 +81,7 @@ class StripePaymentMethodEnrollmentProviderTest {
                 .contains("customer=cus_test")
                 .contains("usage=off_session")
                 .contains("automatic_payment_methods%5Benabled%5D=true")
-                .contains("return_url=electrahub%3A%2F%2Fpayment%2Fcard-setup");
+                .doesNotContain("return_url");
         assertThat(result.status()).isEqualTo("succeeded");
         assertThat(result.paymentMethodReference()).isEqualTo("pm_test");
         assertThat(result.providerCustomerReference()).isEqualTo("cus_test");

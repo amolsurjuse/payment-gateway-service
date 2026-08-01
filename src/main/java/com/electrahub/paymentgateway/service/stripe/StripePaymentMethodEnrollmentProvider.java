@@ -84,7 +84,7 @@ public class StripePaymentMethodEnrollmentProvider implements PaymentMethodEnrol
         form.put("automatic_payment_methods[allow_redirects]", "always");
         form.put("usage", "off_session");
         form.put("metadata[electrahub_enrollment_id]", enrollmentId.toString());
-        form.put("return_url", returnUrl);
+
         JsonNode body = requireSuccessful(transport.postForm(
                 uri("/v1/setup_intents"),
                 authorization(secretKey(connection), "electrahub-enrollment-" + enrollmentId),
