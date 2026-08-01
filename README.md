@@ -7,12 +7,12 @@ Provider-neutral routing, encrypted payment-method tokens, durable financial ope
 | Region | Provider | Available without legal onboarding | Adapter state |
 |---|---|---|---|
 | US, Canada, UK | Stripe | Anonymous, expiring developer sandbox | Authorize, partial/full capture, void, refund, inquiry, 3DS action, signed webhooks |
-| Singapore | 2C2P | Public `JT01` hosted-payment demo | Hosted SGD checkout, inquiry, signed backend response |
+| Singapore | 2C2P | Documentation sample only; the published `JT01` key is currently rejected by the sandbox | Hosted SGD checkout, inquiry, signed backend response after 2C2P issues a working key |
 | India | Razorpay | Code only; test keys require an account login | Order checkout, authorize webhook, capture, refund, inquiry |
 | Netherlands, Germany | Mollie | Code only; test key requires an eligible account | Hosted manual authorization, capture, void, refund, authenticated webhook re-fetch |
 | Sweden and EU fallback | Adyen | Code only; test account approval is required | Checkout session, capture, cancel, refund, batched HMAC webhooks |
 
-The 2C2P public demo does not expose the exchange keys needed for maintenance operations, so capture, void, and refund are intentionally unavailable in that profile. No live-money connection is seeded or activated by Liquibase.
+The 2C2P public demo does not expose the exchange keys needed for maintenance operations, so capture, void, and refund are intentionally unavailable in that profile. On 2026-08-01, both the adapter request and the provider's minimal published request returned `9042` (hash mismatch) with the key shown in 2C2P's JWT example; treat that value as documentation-only until 2C2P issues or republishes a working sandbox key. Even with a working demo key, the profile is not eligible for ElectraHub session execution because that lifecycle requires both `AUTHORIZE` and `CAPTURE`. No live-money connection is seeded or activated by Liquibase.
 
 ## Safety boundaries
 
@@ -41,13 +41,17 @@ kubectl -n dev create secret generic payment-gateway-provider-dev `
   --from-literal=APP_GATEWAY_TOKEN_ENCRYPTION_KEY='<base64-256-bit-key>' `
   --from-literal=APP_GATEWAY_STRIPE_CREDENTIAL='<test-secret-key>' `
   --from-literal=APP_GATEWAY_STRIPE_WEBHOOK_SECRET='<whsec-value>' `
+  --from-literal=APP_GATEWAY_MOLLIE_CREDENTIAL='<test-api-key>' `
+  --from-literal=APP_GATEWAY_2C2P_DEMO_SECRET_KEY='<published-demo-signing-key>' `
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
 Use these write-only references when creating a gateway connection:
 
-- Credential: `env:APP_GATEWAY_STRIPE_CREDENTIAL`
-- Webhook: `env:APP_GATEWAY_STRIPE_WEBHOOK_SECRET`
+- Stripe credential: `env:APP_GATEWAY_STRIPE_CREDENTIAL`
+- Stripe webhook: `env:APP_GATEWAY_STRIPE_WEBHOOK_SECRET`
+- Mollie credential: `env:APP_GATEWAY_MOLLIE_CREDENTIAL`
+- 2C2P public demo: leave the connection credential reference blank; the adapter reads `APP_GATEWAY_2C2P_DEMO_SECRET_KEY` only for endpoint profile `2c2p-sandbox-sg-demo`.
 
 Provider credential value formats:
 
@@ -59,20 +63,20 @@ Adyen:    {"apiKey":"...","merchantAccount":"...","clientKey":"...","countryCode
 2C2P:     {"merchantId":"...","secretKey":"..."} (private merchant profile only)
 ```
 
-Adyen's webhook secret is the hex HMAC key. Razorpay and Stripe use the webhook secret generated in their dashboards. The 2C2P public demo signing key is supplied through `APP_GATEWAY_2C2P_DEMO_SECRET_KEY` at runtime and is not committed.
+Adyen's webhook secret is the hex HMAC key. Razorpay and Stripe use the webhook secret generated in their dashboards. A provider-issued 2C2P demo signing key is supplied through `APP_GATEWAY_2C2P_DEMO_SECRET_KEY` at runtime and is not committed. `TwoC2PLiveSandboxTest` is opt-in through `TWO_C2P_DEMO_INTEGRATION_KEY` so key rotation is detected without making routine builds depend on an external sandbox.
 
 ## Activation order
 
-1. Create a sandbox connection with the matching endpoint profile.
+1. Create a sandbox connection with the matching endpoint profile (`stripe-sandbox`, `mollie-sandbox`, `razorpay-sandbox`, `adyen-sandbox`, or `2c2p-sandbox-sg-demo`).
 2. Validate and activate the connection.
 3. Create and activate the merchant account.
 4. Create the payment route disabled, then enable it in a separately audited action.
-5. Configure the token-vault secret in the gateway deployment.
-6. Tokenize a card in the provider UI/SDK and register it through payment-service `POST /api/v1/payment/cards/tokenized`.
+5. For a `CARD_ON_FILE` route, configure the token-vault secret, tokenize in the provider UI/SDK, and register through payment-service `POST /api/v1/payment/cards/tokenized`.
+6. For the Mollie `HOSTED_CHECKOUT` route, send `gatewayPaymentFlow=HOSTED_CHECKOUT`, omit `paymentMethodReference`, and provide an `electrahub://` URL or an HTTPS return URL on `electrahub.net`. Mollie checkout is restricted to credit cards with manual capture so authorization and settlement remain separate.
 7. Add one network to `PAYMENT_GATEWAY_EXECUTION_PILOT_NETWORK_IDS`.
 8. Set `PAYMENT_GATEWAY_EXECUTION_ENABLED=true` only in the sandbox environment.
 9. Exercise authorize, customer action, capture/void, webhook, and reconciliation flows.
-10. Keep `APP_GATEWAY_PRODUCTION_ENABLED=false` until merchant onboarding, PCI scope, terms, refund policy, and reconciliation ownership are approved.
+10. Keep `APP_GATEWAY_PRODUCTION_ENABLED=false` until merchant onboarding, PCI scope, terms, refund policy, and reconciliation ownership are approved. This kill switch blocks new production-provider validation, activation, routing, and financial operations while preserving read-only status reconciliation and webhook verification for in-flight recovery.
 
 The legacy payment-service `POST /cards` route is migration-only and is not eligible for provider execution. New clients must use `POST /cards/tokenized`; only the resulting ElectraHub payment-method UUID is stored by payment-service.
 

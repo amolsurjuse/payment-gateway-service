@@ -1,5 +1,6 @@
 package com.electrahub.paymentgateway.service;
 
+import com.electrahub.paymentgateway.config.GatewayProperties;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayCapability;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayConnection;
 import com.electrahub.paymentgateway.domain.GatewayContracts.GatewayConnectionStatus;
@@ -13,6 +14,7 @@ import com.electrahub.paymentgateway.domain.GatewayContracts.RouteResolution;
 import com.electrahub.paymentgateway.domain.GatewayContracts.RouteResolutionRequest;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Set;
 import java.util.UUID;
@@ -21,7 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class GatewayRoutePolicyTest {
 
-    private final GatewayRoutePolicy policy = new GatewayRoutePolicy();
+    private final GatewayRoutePolicy policy = policy(false);
 
     @Test
     void approvesActiveRouteWithAllRequiredCapabilities() {
@@ -66,6 +68,31 @@ class GatewayRoutePolicyTest {
 
         assertThat(result.approved()).isFalse();
         assertThat(result.code()).isEqualTo("PAYMENT_ROUTE_DISABLED");
+    }
+
+    @Test
+    void rejectsRealProductionProviderExecutionWhenProductionIsDisabled() {
+        RouteResolution result = policy.evaluateOperation(
+                route(true, Set.of(GatewayCapability.AUTHORIZE)),
+                connection(GatewayProvider.STRIPE, GatewayEnvironment.PRODUCTION),
+                GatewayOperationType.AUTHORIZE,
+                Instant.now()
+        );
+
+        assertThat(result.approved()).isFalse();
+        assertThat(result.code()).isEqualTo(ProductionProviderMutationGuard.ERROR_CODE);
+    }
+
+    @Test
+    void allowsRealProductionProviderExecutionWhenProductionIsEnabled() {
+        RouteResolution result = policy(true).evaluateOperation(
+                route(true, Set.of(GatewayCapability.AUTHORIZE)),
+                connection(GatewayProvider.STRIPE, GatewayEnvironment.PRODUCTION),
+                GatewayOperationType.AUTHORIZE,
+                Instant.now()
+        );
+
+        assertThat(result.approved()).isTrue();
     }
 
     @Test
@@ -114,6 +141,19 @@ class GatewayRoutePolicyTest {
                 "mock-v1", "sandbox", capabilities, false, false, false,
                 Instant.now(), Instant.now(), null, 1, Instant.now(), Instant.now()
         );
+    }
+
+    private GatewayConnection connection(GatewayProvider provider, GatewayEnvironment environment) {
+        return new GatewayConnection(
+                UUID.randomUUID(), provider, environment, GatewayConnectionStatus.ACTIVE,
+                "adapter-v1", "provider-profile", Set.of(GatewayCapability.AUTHORIZE), true, true, false,
+                Instant.now(), Instant.now(), null, 1, Instant.now(), Instant.now()
+        );
+    }
+
+    private GatewayRoutePolicy policy(boolean productionEnabled) {
+        GatewayProperties properties = new GatewayProperties(Duration.ofMinutes(10), true, productionEnabled);
+        return new GatewayRoutePolicy(new ProductionProviderMutationGuard(properties));
     }
 
     private RouteResolutionRequest request(Set<GatewayCapability> requiredCapabilities) {

@@ -68,7 +68,8 @@ class GatewayConfigurationRouteSqlTest {
         return new GatewayConfigurationService(
                 jdbcTemplate,
                 mock(PaymentGatewayRegistry.class),
-                new GatewayRouteCache(new GatewayProperties(Duration.ofMinutes(10), true, false))
+                new GatewayRouteCache(new GatewayProperties(Duration.ofMinutes(10), true, false)),
+                new ProductionProviderMutationGuard(new GatewayProperties(Duration.ofMinutes(10), true, false))
         );
     }
 }

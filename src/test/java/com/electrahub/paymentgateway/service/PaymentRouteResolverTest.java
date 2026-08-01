@@ -36,7 +36,9 @@ class PaymentRouteResolverTest {
 
         PaymentRouteResolver resolver = new PaymentRouteResolver(
                 configurationService,
-                new GatewayRoutePolicy(),
+                new GatewayRoutePolicy(new ProductionProviderMutationGuard(
+                        new GatewayProperties(Duration.ofMinutes(10), true, false)
+                )),
                 new GatewayRouteCache(new GatewayProperties(Duration.ofMinutes(10), true, false))
         );
         ScopedRouteResolutionRequest request = new ScopedRouteResolutionRequest(

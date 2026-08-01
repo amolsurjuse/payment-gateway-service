@@ -59,7 +59,8 @@ public final class GatewayContracts {
 
     public enum PaymentMethodType {
         CARD_ON_FILE,
-        CARD_PRESENT
+        CARD_PRESENT,
+        HOSTED_CHECKOUT
     }
 
     public enum GatewayCapability {

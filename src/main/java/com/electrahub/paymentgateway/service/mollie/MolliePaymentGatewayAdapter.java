@@ -157,6 +157,7 @@ public class MolliePaymentGatewayAdapter implements PaymentGatewayAdapter {
         body.put("description", bounded("ElectraHub charging " + request.paymentIntentId(), 255));
         body.put("redirectUrl", request.returnUrl().trim());
         body.put("webhookUrl", webhookBaseUrl + "/" + connection.id());
+        body.put("method", "creditcard");
         body.put("captureMode", "manual");
         body.put("metadata", Map.of(
                 "electrahub_payment_intent_id", request.paymentIntentId(),
@@ -183,6 +184,12 @@ public class MolliePaymentGatewayAdapter implements PaymentGatewayAdapter {
 
     private GatewayOperationResult capture(GatewayOperationRequest request, GatewayConnection connection) {
         String paymentId = paymentId(request.providerReference());
+        JsonNode payment = requireSuccessful(transport.get(
+                uri("/v2/payments/" + path(paymentId)), authorization(apiKey(connection))
+        ));
+        if ("paid".equals(payment.path("status").asText())) {
+            return result(GatewayOperationStatus.SUCCEEDED, paymentId, paymentId);
+        }
         Map<String, Object> body = Map.of(
                 "amount", amount(request),
                 "description", bounded("ElectraHub capture " + request.operationId(), 255)

@@ -32,6 +32,8 @@ class MolliePaymentGatewayAdapterTest {
 
     private HttpServer server;
     private MolliePaymentGatewayAdapter adapter;
+    private boolean paymentAlreadyPaid;
+    private int captureRequests;
 
     @BeforeEach
     void setUp() throws IOException {
@@ -73,6 +75,16 @@ class MolliePaymentGatewayAdapterTest {
     }
 
     @Test
+    void doesNotCaptureAnAlreadyPaidPaymentAgain() {
+        paymentAlreadyPaid = true;
+
+        var result = adapter.execute(captureRequest(), connection());
+
+        assertThat(result.status()).isEqualTo(GatewayOperationStatus.SUCCEEDED);
+        assertThat(captureRequests).isZero();
+    }
+
+    @Test
     void authenticatesClassicWebhookByRefetchingPayment() {
         var event = adapter.parseWebhook(connection(), "id=tr_test123", java.util.Map.of());
 
@@ -89,10 +101,19 @@ class MolliePaymentGatewayAdapterTest {
             body = "{\"_embedded\":{\"payments\":[]}}";
         } else if (path.equals("/v2/payments") && exchange.getRequestMethod().equals("POST")) {
             String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            assertThat(request).contains("\"method\":\"creditcard\"");
             assertThat(request).contains("\"captureMode\":\"manual\"");
             body = "{\"id\":\"tr_test123\",\"status\":\"open\",\"_links\":{\"checkout\":{\"href\":\"https://checkout.mollie.test/tr_test123\"}}}";
+        } else if (path.equals("/v2/payments/tr_test123/captures") && exchange.getRequestMethod().equals("POST")) {
+            captureRequests++;
+            body = "{\"id\":\"cpt_test123\",\"status\":\"succeeded\"}";
         } else {
-            body = """
+            body = paymentAlreadyPaid
+                    ? """
+                    {"id":"tr_test123","status":"paid","paidAt":"2026-07-31T14:00:00Z",
+                     "metadata":{"electrahub_payment_intent_id":"payment-intent-123"}}
+                    """
+                    : """
                     {"id":"tr_test123","status":"authorized","authorizedAt":"2026-07-31T14:00:00Z",
                      "metadata":{"electrahub_payment_intent_id":"payment-intent-123"}}
                     """;
@@ -118,5 +139,11 @@ class MolliePaymentGatewayAdapterTest {
         return new GatewayOperationRequest(UUID.randomUUID(), "payment-intent-123", null, "operation-123",
                 "idem-123", GatewayOperationType.AUTHORIZE, new BigDecimal("25.00"), "EUR", "account-123", null, null, null,
                 "https://driver.electrahub.net/payments/return", Instant.now());
+    }
+
+    private GatewayOperationRequest captureRequest() {
+        return new GatewayOperationRequest(UUID.randomUUID(), "payment-intent-123", null, "operation-456",
+                "idem-456", GatewayOperationType.CAPTURE, new BigDecimal("25.00"), "EUR", "account-123",
+                null, null, "tr_test123", null, Instant.now());
     }
 }

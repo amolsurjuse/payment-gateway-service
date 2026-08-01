@@ -18,6 +18,12 @@ import java.util.Set;
 @Component
 public class GatewayRoutePolicy {
 
+    private final ProductionProviderMutationGuard productionProviderMutationGuard;
+
+    public GatewayRoutePolicy(ProductionProviderMutationGuard productionProviderMutationGuard) {
+        this.productionProviderMutationGuard = productionProviderMutationGuard;
+    }
+
     public RouteResolution evaluate(PaymentRoute route, GatewayConnection connection, RouteResolutionRequest request, Instant now) {
         if (!route.enabled()) {
             return RouteResolution.rejected("PAYMENT_ROUTE_DISABLED", "The matching payment route is disabled.");
@@ -27,6 +33,9 @@ public class GatewayRoutePolicy {
         }
         if (connection.provider() == GatewayProvider.MOCK && connection.environment() == GatewayEnvironment.PRODUCTION) {
             return RouteResolution.rejected("PAYMENT_ROUTE_DISABLED", "Mock routing is prohibited in production.");
+        }
+        if (!productionProviderMutationGuard.isAllowed(connection)) {
+            return RouteResolution.rejected(ProductionProviderMutationGuard.ERROR_CODE, ProductionProviderMutationGuard.ERROR_MESSAGE);
         }
         if (route.effectiveFrom() != null && route.effectiveFrom().isAfter(now)
                 || route.effectiveTo() != null && !route.effectiveTo().isAfter(now)) {
@@ -96,6 +105,9 @@ public class GatewayRoutePolicy {
         }
         if (connection.provider() == GatewayProvider.MOCK && connection.environment() == GatewayEnvironment.PRODUCTION) {
             return RouteResolution.rejected("PAYMENT_ROUTE_DISABLED", "Mock routing is prohibited in production.");
+        }
+        if (!productionProviderMutationGuard.isAllowed(connection)) {
+            return RouteResolution.rejected(ProductionProviderMutationGuard.ERROR_CODE, ProductionProviderMutationGuard.ERROR_MESSAGE);
         }
 
         Set<GatewayCapability> required = new HashSet<>(route.requiredCapabilities());

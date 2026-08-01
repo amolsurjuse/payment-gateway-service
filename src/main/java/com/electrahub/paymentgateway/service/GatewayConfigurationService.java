@@ -52,15 +52,18 @@ public class GatewayConfigurationService {
     private final JdbcTemplate jdbcTemplate;
     private final PaymentGatewayRegistry adapterRegistry;
     private final GatewayRouteCache routeCache;
+    private final ProductionProviderMutationGuard productionProviderMutationGuard;
 
     public GatewayConfigurationService(
             JdbcTemplate jdbcTemplate,
             PaymentGatewayRegistry adapterRegistry,
-            GatewayRouteCache routeCache
+            GatewayRouteCache routeCache,
+            ProductionProviderMutationGuard productionProviderMutationGuard
     ) {
         this.jdbcTemplate = jdbcTemplate;
         this.adapterRegistry = adapterRegistry;
         this.routeCache = routeCache;
+        this.productionProviderMutationGuard = productionProviderMutationGuard;
     }
 
     public List<GatewayConnection> listConnections() {
@@ -156,6 +159,7 @@ public class GatewayConfigurationService {
     /** The provider call runs without an open database transaction. */
     public GatewayConnection validateConnection(UUID connectionId, UUID actorId) {
         GatewayConnection existing = requireConnection(connectionId);
+        productionProviderMutationGuard.requireAllowed(existing);
         jdbcTemplate.update(
                 "UPDATE payment_gateway.gateway_connection SET status = 'VALIDATING', updated_at = ? WHERE id = ?",
                 offset(Instant.now()), connectionId
@@ -189,6 +193,7 @@ public class GatewayConfigurationService {
 
     public GatewayConnection activateConnection(UUID connectionId, UUID actorId) {
         GatewayConnection existing = requireConnection(connectionId);
+        productionProviderMutationGuard.requireAllowed(existing);
         if (existing.status() != GatewayConnectionStatus.READY) {
             throw new GatewayBusinessException("GATEWAY_CONNECTION_NOT_READY", "Validate the gateway connection before activation.");
         }
@@ -357,6 +362,7 @@ public class GatewayConfigurationService {
         RouteConfiguration routeConfiguration = validateRouteConfiguration(
                 request.merchantAccountId(),
                 request.settlementCurrency(),
+                request.paymentMethod(),
                 request.requiredCapabilities(),
                 request.effectiveFrom(),
                 request.effectiveTo()
@@ -408,6 +414,7 @@ public class GatewayConfigurationService {
         RouteConfiguration routeConfiguration = validateRouteConfiguration(
                 request.merchantAccountId(),
                 request.settlementCurrency(),
+                request.paymentMethod(),
                 request.requiredCapabilities(),
                 request.effectiveFrom(),
                 request.effectiveTo()
@@ -459,6 +466,7 @@ public class GatewayConfigurationService {
             validateRouteConfiguration(
                     existing.merchantAccountId(),
                     existing.settlementCurrency(),
+                    existing.paymentMethod(),
                     existing.requiredCapabilities(),
                     existing.effectiveFrom(),
                     existing.effectiveTo()
@@ -484,6 +492,7 @@ public class GatewayConfigurationService {
     private RouteConfiguration validateRouteConfiguration(
             UUID merchantAccountId,
             String requestedSettlementCurrency,
+            PaymentMethodType paymentMethod,
             Set<GatewayCapability> requestedCapabilities,
             Instant effectiveFrom,
             Instant effectiveTo
@@ -497,7 +506,9 @@ public class GatewayConfigurationService {
         if (!merchant.settlementCurrency().equals(settlementCurrency)) {
             throw new GatewayBusinessException("MERCHANT_SETTLEMENT_CURRENCY_UNSUPPORTED", "Route settlement currency must match the merchant account settlement currency.");
         }
+        requirePaymentMethodSupported(connection.provider(), paymentMethod);
         Set<GatewayCapability> capabilities = requestedCapabilities == null ? Set.of() : requestedCapabilities;
+        requirePaymentMethodCapabilities(paymentMethod, capabilities);
         if (!connection.capabilities().containsAll(capabilities)) {
             throw new GatewayBusinessException("PAYMENT_METHOD_NOT_SUPPORTED", "The connection does not support the requested route capabilities.");
         }
@@ -505,6 +516,37 @@ public class GatewayConfigurationService {
             throw new GatewayBusinessException("INVALID_EFFECTIVE_PERIOD", "Route effectiveTo must be after effectiveFrom.");
         }
         return new RouteConfiguration(merchant, settlementCurrency, capabilities);
+    }
+
+    static void requirePaymentMethodSupported(GatewayProvider provider, PaymentMethodType paymentMethod) {
+        boolean supported = switch (provider) {
+            case MOLLIE -> paymentMethod == PaymentMethodType.HOSTED_CHECKOUT;
+            case TWO_C2P -> false;
+            case MOCK, STRIPE, ADYEN, RAZORPAY -> paymentMethod == PaymentMethodType.CARD_ON_FILE;
+        };
+        if (!supported) {
+            throw new GatewayBusinessException(
+                    "PAYMENT_METHOD_NOT_SUPPORTED",
+                    "The selected provider does not support the requested payment method."
+            );
+        }
+    }
+
+    static void requirePaymentMethodCapabilities(
+            PaymentMethodType paymentMethod,
+            Set<GatewayCapability> capabilities
+    ) {
+        if (paymentMethod == PaymentMethodType.HOSTED_CHECKOUT
+                && !capabilities.containsAll(Set.of(
+                GatewayCapability.AUTHORIZE,
+                GatewayCapability.MANUAL_CAPTURE,
+                GatewayCapability.CAPTURE
+        ))) {
+            throw new GatewayBusinessException(
+                    "PAYMENT_METHOD_NOT_SUPPORTED",
+                    "Hosted checkout routes require authorize and manual-capture capabilities."
+            );
+        }
     }
 
     public GatewayRouteCandidate requireRouteCandidate(UUID routeId) {
