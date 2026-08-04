@@ -94,6 +94,71 @@ class GatewayWebhookServiceTest {
     }
 
     @Test
+    void scopesIdempotencyCorrelationThroughTheMerchantConnection() {
+        assertCorrelationUsesMerchantConnection(new GatewayWebhookEvent(
+                "evt-idempotency", "payment_intent.succeeded", "pi-1", null, null,
+                GatewayWebhookOutcome.CAPTURED, "CAPTURED", Instant.now(),
+                new BigDecimal("10.00"), "USD", "capture-idem-1"
+        ));
+    }
+
+    @Test
+    void scopesPublicReferenceCorrelationThroughTheMerchantConnection() {
+        assertCorrelationUsesMerchantConnection(new GatewayWebhookEvent(
+                "evt-public-reference", "payment_intent.succeeded", null, null, "ch-1",
+                GatewayWebhookOutcome.CAPTURED, "CAPTURED", Instant.now(),
+                new BigDecimal("10.00"), "USD", null
+        ));
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void durablyRecordsUnmatchedStripePaymentIntentWebhookAsIgnored() {
+        Fixture fixture = fixture();
+        GatewayConnection connection = connection();
+        GatewayWebhookEvent event = new GatewayWebhookEvent(
+                "evt-stripe-unmatched", "payment_intent.succeeded", "pi_unmatched",
+                null, null, GatewayWebhookOutcome.CAPTURED, "CAPTURED", Instant.now()
+        );
+        when(fixture.configurationService.requireConnection(connection.id())).thenReturn(connection);
+        when(fixture.registry.find(GatewayProvider.STRIPE)).thenReturn(Optional.of(fixture.adapter));
+        when(fixture.adapter.parseWebhooks(connection, "signed-body", Map.of())).thenReturn(List.of(event));
+        executeTransactions(fixture);
+        AtomicReference<String> correlationSql = new AtomicReference<>();
+        AtomicReference<String> insertSql = new AtomicReference<>();
+        AtomicReference<String> persistedStatus = new AtomicReference<>();
+        doAnswer(invocation -> {
+            correlationSql.set(invocation.getArgument(0));
+            return List.of();
+        }).when(fixture.jdbcTemplate).query(anyString(), any(RowMapper.class), any(Object[].class));
+        doAnswer(invocation -> {
+            String sql = invocation.getArgument(0);
+            if (sql.contains("INSERT INTO payment_gateway.gateway_webhook_event")) {
+                insertSql.set(sql);
+            } else if (sql.contains("SET gateway_operation_id = ?")) {
+                persistedStatus.set(invocation.getArgument(2));
+            }
+            return 1;
+        }).when(fixture.jdbcTemplate).update(anyString(), any(Object[].class));
+
+        var receipt = fixture.service.receive(connection.id(), "signed-body", Map.of());
+
+        assertThat(receipt.applied()).isZero();
+        assertThat(receipt.duplicates()).isZero();
+        assertThat(receipt.events()).singleElement().satisfies(webhookReceipt -> {
+            assertThat(webhookReceipt.operationUpdated()).isFalse();
+            assertThat(webhookReceipt.code()).isEqualTo("GATEWAY_WEBHOOK_NO_MATCH");
+        });
+        assertThat(correlationSql.get())
+                .contains("JOIN payment_gateway.merchant_payment_account merchant")
+                .contains("merchant.connection_id = ?")
+                .contains("operation.provider_reference = ?")
+                .doesNotContain("route.connection_id");
+        assertThat(insertSql.get()).contains("INSERT INTO payment_gateway.gateway_webhook_event");
+        assertThat(persistedStatus.get()).isEqualTo("IGNORED");
+    }
+
+    @Test
     void rejectsSignedWebhookAmountMismatchBeforeDurableIngestion() {
         assertStableFieldMismatch(
                 new GatewayWebhookEvent(
@@ -168,6 +233,10 @@ class GatewayWebhookServiceTest {
 
         assertThat(receipt.applied()).isEqualTo(1);
         assertThat(correlationSql.get())
+                .contains("JOIN payment_gateway.merchant_payment_account merchant")
+                .contains("merchant.id = route.merchant_account_id")
+                .contains("merchant.connection_id = ?")
+                .doesNotContain("route.connection_id")
                 .contains("operation.operation_type = 'REFUND'")
                 .contains("operation.provider_reference = ?")
                 .contains("operation.public_transaction_reference = ?")
@@ -209,6 +278,31 @@ class GatewayWebhookServiceTest {
                 );
 
         verify(fixture.jdbcTemplate, never()).update(anyString(), any(Object[].class));
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void assertCorrelationUsesMerchantConnection(GatewayWebhookEvent event) {
+        Fixture fixture = fixture();
+        GatewayConnection connection = connection();
+        when(fixture.configurationService.requireConnection(connection.id())).thenReturn(connection);
+        when(fixture.registry.find(GatewayProvider.STRIPE)).thenReturn(Optional.of(fixture.adapter));
+        when(fixture.adapter.parseWebhooks(connection, "signed-body", Map.of())).thenReturn(List.of(event));
+        executeTransactions(fixture);
+        AtomicReference<String> correlationSql = new AtomicReference<>();
+        doAnswer(invocation -> {
+            correlationSql.set(invocation.getArgument(0));
+            return List.of();
+        }).when(fixture.jdbcTemplate).query(anyString(), any(RowMapper.class), any(Object[].class));
+        when(fixture.jdbcTemplate.update(anyString(), any(Object[].class))).thenReturn(1);
+
+        fixture.service.receive(connection.id(), "signed-body", Map.of());
+
+        assertThat(correlationSql.get())
+                .contains("JOIN payment_gateway.payment_route route ON route.id = operation.route_id")
+                .contains("JOIN payment_gateway.merchant_payment_account merchant")
+                .contains("merchant.id = route.merchant_account_id")
+                .contains("merchant.connection_id = ?")
+                .doesNotContain("route.connection_id");
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

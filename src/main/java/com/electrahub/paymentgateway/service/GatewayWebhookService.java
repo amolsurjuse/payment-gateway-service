@@ -155,7 +155,9 @@ public class GatewayWebhookService {
                 SELECT operation.id, operation.amount, operation.currency, operation.idempotency_key
                   FROM payment_gateway.gateway_operation operation
                   JOIN payment_gateway.payment_route route ON route.id = operation.route_id
-                 WHERE route.connection_id = ?
+                  JOIN payment_gateway.merchant_payment_account merchant
+                    ON merchant.id = route.merchant_account_id
+                 WHERE merchant.connection_id = ?
                    AND operation.status IN ('PENDING_RECONCILIATION', 'ACTION_REQUIRED')
                 """);
         List<Object> arguments = new java.util.ArrayList<>();
@@ -215,7 +217,9 @@ public class GatewayWebhookService {
                 SELECT operation.id, operation.amount, operation.currency, operation.idempotency_key
                   FROM payment_gateway.gateway_operation operation
                   JOIN payment_gateway.payment_route route ON route.id = operation.route_id
-                 WHERE route.connection_id = ?
+                  JOIN payment_gateway.merchant_payment_account merchant
+                    ON merchant.id = route.merchant_account_id
+                 WHERE merchant.connection_id = ?
                    AND operation.status IN ('PENDING_RECONCILIATION', 'ACTION_REQUIRED')
                    AND operation.public_transaction_reference = ?
                 """);
@@ -272,7 +276,9 @@ public class GatewayWebhookService {
                 SELECT operation.id, operation.amount, operation.currency, operation.idempotency_key
                   FROM payment_gateway.gateway_operation operation
                   JOIN payment_gateway.payment_route route ON route.id = operation.route_id
-                 WHERE route.connection_id = ?
+                  JOIN payment_gateway.merchant_payment_account merchant
+                    ON merchant.id = route.merchant_account_id
+                 WHERE merchant.connection_id = ?
                    AND operation.status IN ('PENDING_RECONCILIATION', 'ACTION_REQUIRED')
                    AND operation.operation_type = 'REFUND'
                    AND operation.provider_reference = ?
