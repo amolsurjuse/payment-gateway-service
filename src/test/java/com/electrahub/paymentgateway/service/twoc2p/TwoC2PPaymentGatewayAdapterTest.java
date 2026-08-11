@@ -144,6 +144,22 @@ class TwoC2PPaymentGatewayAdapterTest {
         assertThat(credentialResolver.credentialRequests).isZero();
         assertThat(credentialResolver.certificateRequests).isZero();
         assertThat(maintenanceCalls).isEmpty();
+        assertThat(paymentTokenRequests).isEqualTo(1);
+        assertThat(inquiryRequests).isZero();
+        assertThat(lastPaymentTokenPayload.path("merchantID").asText()).isEqualTo("JT01");
+        assertThat(lastPaymentTokenPayload.path("currencyCode").asText()).isEqualTo("SGD");
+        assertThat(lastPaymentTokenPayload.path("amount").asText()).isEqualTo("1.00");
+    }
+
+    @Test
+    void publicDemoValidationRejectsResponseSignedWithAnotherKey() {
+        responseSigningKey = "different-signing-key-abcdefghijklmnopqrstuvwxyz-0123456789";
+
+        var validation = adapter.validate(demoConnection());
+
+        assertThat(validation.valid()).isFalse();
+        assertThat(validation.code()).isEqualTo("TWO_C2P_CREDENTIAL_REJECTED");
+        assertThat(validation.capabilities()).isEmpty();
     }
 
     @Test

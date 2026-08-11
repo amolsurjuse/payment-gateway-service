@@ -68,7 +68,6 @@ public class TwoC2PPaymentGatewayAdapter implements PaymentGatewayAdapter {
             GatewayCapability.THREE_DS_SCA
     );
     private static final Set<String> PAYMENT_PENDING_CODES = Set.of("0001", "2001", "4009");
-    private static final Set<String> DEMO_PROBE_ACCEPTABLE_CODES = Set.of("0000", "2001", "2002");
     private static final Set<String> CAPTURE_READY_VALIDATION_STATUSES = Set.of("A", "RS");
     private static final Set<String> PAYMENT_DECLINED_CODES = Set.of(
             "0003", "0004", "2003", "4004", "4005", "4012", "4013", "4014", "4015",
@@ -159,9 +158,10 @@ public class TwoC2PPaymentGatewayAdapter implements PaymentGatewayAdapter {
         if (isPublicDemo(connection)) {
             String validationInvoice = validationInvoice(connection.id());
             try {
-                JsonNode inquiry = paymentInquiry(validationInvoice, credentials);
-                validatePaymentIdentity(inquiry, credentials.merchantId(), validationInvoice, null, null, true);
-                if (!DEMO_PROBE_ACCEPTABLE_CODES.contains(inquiry.path("respCode").asText())) {
+                JsonNode paymentToken = publicDemoPaymentTokenProbe(validationInvoice, credentials);
+                if (!"0000".equals(paymentToken.path("respCode").asText())
+                        || paymentToken.path("paymentToken").asText().isBlank()
+                        || paymentToken.path("webPaymentUrl").asText().isBlank()) {
                     return invalidValidation("TWO_C2P_CREDENTIAL_REJECTED", "2C2P rejected the sandbox credential.");
                 }
             } catch (GatewayBusinessException exception) {
@@ -556,6 +556,21 @@ public class TwoC2PPaymentGatewayAdapter implements PaymentGatewayAdapter {
         payload.put("invoiceNo", invoiceNo);
         payload.put("locale", "en");
         return postSigned("/payment/4.3/paymentInquiry", payload, credentials.secretKey());
+    }
+
+    /**
+     * 2C2P documents Payment Token as the sandbox connectivity check. Payment Inquiry is not
+     * suitable for the public demo because an unknown invoice response may omit merchant and
+     * invoice identity fields even when the JWT signature and credential are valid.
+     */
+    private JsonNode publicDemoPaymentTokenProbe(String invoiceNo, Credentials credentials) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("merchantID", credentials.merchantId());
+        payload.put("invoiceNo", invoiceNo);
+        payload.put("description", "ElectraHub sandbox connectivity verification");
+        payload.put("amount", "1.00");
+        payload.put("currencyCode", "SGD");
+        return postSigned("/payment/4.3/paymentToken", payload, credentials.secretKey());
     }
 
     private JsonNode postSigned(String path, Map<String, Object> payload, String secretKey) {
