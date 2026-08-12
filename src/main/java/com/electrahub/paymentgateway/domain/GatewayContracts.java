@@ -65,6 +65,7 @@ public final class GatewayContracts {
 
     public enum GatewayCapability {
         AUTHORIZE,
+        INCREMENTAL_AUTHORIZE,
         MANUAL_CAPTURE,
         CAPTURE,
         PARTIAL_CAPTURE,
@@ -79,6 +80,7 @@ public final class GatewayContracts {
 
     public enum GatewayOperationType {
         AUTHORIZE,
+        INCREMENTAL_AUTHORIZE,
         VOID,
         CAPTURE,
         REFUND,

@@ -278,6 +278,10 @@ public class TwoC2PPaymentGatewayAdapter implements PaymentGatewayAdapter {
         validateProfile(connection);
         return switch (request.operationType()) {
             case AUTHORIZE -> authorize(request, connection);
+            case INCREMENTAL_AUTHORIZE -> throw new GatewayBusinessException(
+                    "TWO_C2P_INCREMENTAL_AUTHORIZATION_UNSUPPORTED",
+                    "2C2P does not support incremental authorization on this route."
+            );
             case CAPTURE -> maintenanceMutation(request, connection, "S");
             case VOID -> maintenanceMutation(request, connection, "V");
             case REFUND -> maintenanceMutation(request, connection, "R");

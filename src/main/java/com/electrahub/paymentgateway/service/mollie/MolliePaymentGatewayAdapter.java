@@ -104,6 +104,10 @@ public class MolliePaymentGatewayAdapter implements PaymentGatewayAdapter {
         }
         return switch (request.operationType()) {
             case AUTHORIZE -> authorize(request, connection);
+            case INCREMENTAL_AUTHORIZE -> throw new GatewayBusinessException(
+                    "MOLLIE_INCREMENTAL_AUTHORIZATION_UNSUPPORTED",
+                    "Mollie does not support incremental authorization on this route."
+            );
             case CAPTURE -> capture(request, connection);
             case VOID -> cancel(request, connection);
             case REFUND -> refund(request, connection);

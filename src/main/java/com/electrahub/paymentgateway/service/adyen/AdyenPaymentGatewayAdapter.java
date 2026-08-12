@@ -56,6 +56,17 @@ public class AdyenPaymentGatewayAdapter implements PaymentGatewayAdapter {
             GatewayCapability.THREE_DS_SCA
     );
 
+    private static final Set<GatewayCapability> INCREMENTAL_CAPABILITIES = Set.of(
+            GatewayCapability.AUTHORIZE,
+            GatewayCapability.INCREMENTAL_AUTHORIZE,
+            GatewayCapability.MANUAL_CAPTURE,
+            GatewayCapability.CAPTURE,
+            GatewayCapability.PARTIAL_CAPTURE,
+            GatewayCapability.VOID,
+            GatewayCapability.REFUND,
+            GatewayCapability.THREE_DS_SCA
+    );
+
     private final ProviderHttpTransport transport;
     private final ProviderCredentialResolver credentialResolver;
     private final ObjectMapper objectMapper;
@@ -119,7 +130,9 @@ public class AdyenPaymentGatewayAdapter implements PaymentGatewayAdapter {
         if (!response.successful()) {
             throw unavailable(response.statusCode());
         }
-        return new ConnectionValidation(true, "READY", "Adyen connection validated.", CAPABILITIES, "adyen-checkout-v72");
+        Set<GatewayCapability> capabilities = credentials.authorizationAdjustmentEnabled()
+                ? INCREMENTAL_CAPABILITIES : CAPABILITIES;
+        return new ConnectionValidation(true, "READY", "Adyen connection validated.", capabilities, "adyen-checkout-v72");
     }
 
     private boolean validHmacKey(String value) {
@@ -139,6 +152,7 @@ public class AdyenPaymentGatewayAdapter implements PaymentGatewayAdapter {
         validateProfile(connection);
         return switch (request.operationType()) {
             case AUTHORIZE -> createSession(request, connection);
+            case INCREMENTAL_AUTHORIZE -> amountUpdate(request, connection);
             case CAPTURE -> modification(request, connection, "captures");
             case VOID -> modification(request, connection, "cancels");
             case REFUND -> modification(request, connection, "refunds");
@@ -281,6 +295,35 @@ public class AdyenPaymentGatewayAdapter implements PaymentGatewayAdapter {
         );
     }
 
+    private GatewayOperationResult amountUpdate(GatewayOperationRequest request, GatewayConnection connection) {
+        Credentials credentials = credentials(connection);
+        if (!credentials.authorizationAdjustmentEnabled()) {
+            throw new GatewayBusinessException(
+                    "ADYEN_AUTHORIZATION_ADJUSTMENT_DISABLED",
+                    "Authorization adjustment is not enabled for this Adyen merchant account."
+            );
+        }
+        String pspReference = pspReference(request.providerReference());
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("merchantAccount", credentials.merchantAccount());
+        body.put("reference", bounded(request.operationId(), 80));
+        body.put("amount", amount(request));
+        JsonNode response = requireSuccessful(transport.postJson(
+                uri(connection, credentials, "/payments/" + pspReference + "/amountUpdates"),
+                headers(credentials, request.idempotencyKey()),
+                json(body)
+        ));
+        return new GatewayOperationResult(
+                UUID.randomUUID(),
+                GatewayOperationStatus.PENDING_RECONCILIATION,
+                "PROVIDER_STATUS_PENDING",
+                pspReference,
+                response.path("pspReference").asText(pspReference),
+                null,
+                Instant.now()
+        );
+    }
+
     private void verifyHmac(JsonNode item, String hmacKeyHex) {
         String signature = item.path("additionalData").path("hmacSignature").asText();
         if (signature.isBlank()) {
@@ -346,7 +389,8 @@ public class AdyenPaymentGatewayAdapter implements PaymentGatewayAdapter {
                     value.path("clientKey").asText(),
                     value.path("countryCode").asText("NL").toUpperCase(Locale.ROOT),
                     value.path("liveBaseUrl").asText(),
-                    value.path("manualCaptureEnabled").asBoolean(false)
+                    value.path("manualCaptureEnabled").asBoolean(false),
+                    value.path("authorizationAdjustmentEnabled").asBoolean(false)
             );
             if (credentials.apiKey().isBlank() || credentials.merchantAccount().isBlank()
                     || credentials.clientKey().isBlank() || !credentials.countryCode().matches("^[A-Z]{2}$")) {
@@ -471,7 +515,8 @@ public class AdyenPaymentGatewayAdapter implements PaymentGatewayAdapter {
             String clientKey,
             String countryCode,
             String liveBaseUrl,
-            boolean manualCaptureEnabled
+            boolean manualCaptureEnabled,
+            boolean authorizationAdjustmentEnabled
     ) {
     }
 }

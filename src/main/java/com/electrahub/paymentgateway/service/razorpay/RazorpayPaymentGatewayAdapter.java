@@ -96,6 +96,10 @@ public class RazorpayPaymentGatewayAdapter implements PaymentGatewayAdapter {
         validateProfile(connection);
         return switch (request.operationType()) {
             case AUTHORIZE -> createOrder(request, connection);
+            case INCREMENTAL_AUTHORIZE -> throw new GatewayBusinessException(
+                    "RAZORPAY_INCREMENTAL_AUTHORIZATION_UNSUPPORTED",
+                    "Razorpay does not support incremental authorization on this route."
+            );
             case CAPTURE -> capture(request, connection);
             case REFUND -> refund(request, connection);
             case STATUS_QUERY -> queryStatus(new GatewayOperationStatusQuery(

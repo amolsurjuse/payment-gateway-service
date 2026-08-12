@@ -28,6 +28,7 @@ public class MockPaymentGatewayAdapter implements PaymentGatewayAdapter {
 
     private static final Set<GatewayCapability> CAPABILITIES = Set.of(
             GatewayCapability.AUTHORIZE,
+            GatewayCapability.INCREMENTAL_AUTHORIZE,
             GatewayCapability.MANUAL_CAPTURE,
             GatewayCapability.CAPTURE,
             GatewayCapability.PARTIAL_CAPTURE,

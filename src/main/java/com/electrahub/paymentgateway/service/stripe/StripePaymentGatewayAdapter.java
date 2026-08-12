@@ -106,6 +106,10 @@ public class StripePaymentGatewayAdapter implements PaymentGatewayAdapter {
         validateProfile(connection);
         return switch (request.operationType()) {
             case AUTHORIZE -> authorize(request, connection);
+            case INCREMENTAL_AUTHORIZE -> throw new GatewayBusinessException(
+                    "STRIPE_INCREMENTAL_AUTHORIZATION_UNSUPPORTED",
+                    "This Stripe card-on-file route does not support incremental authorization."
+            );
             case CAPTURE -> capture(request, connection);
             case VOID -> cancel(request, connection);
             case REFUND -> refund(request, connection);

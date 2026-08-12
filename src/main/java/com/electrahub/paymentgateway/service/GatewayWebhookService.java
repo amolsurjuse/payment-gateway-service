@@ -388,7 +388,7 @@ public class GatewayWebhookService {
 
     static GatewayOperationStatus targetStatus(String operationType, GatewayWebhookOutcome outcome) {
         return switch (outcome) {
-            case AUTHORIZED -> "AUTHORIZE".equals(operationType)
+            case AUTHORIZED -> ("AUTHORIZE".equals(operationType) || "INCREMENTAL_AUTHORIZE".equals(operationType))
                     ? GatewayOperationStatus.SUCCEEDED : GatewayOperationStatus.PENDING_RECONCILIATION;
             case CAPTURED -> ("CAPTURE".equals(operationType) || "AUTHORIZE".equals(operationType))
                     ? GatewayOperationStatus.SUCCEEDED : GatewayOperationStatus.PENDING_RECONCILIATION;

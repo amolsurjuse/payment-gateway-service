@@ -42,6 +42,7 @@ class AdyenPaymentGatewayAdapterTest {
     private AdyenPaymentGatewayAdapter adapter;
     private ObjectMapper objectMapper;
     private JsonNode lastSessionRequest;
+    private JsonNode lastAmountUpdateRequest;
 
     @BeforeEach
     void setUp() throws IOException {
@@ -52,6 +53,10 @@ class AdyenPaymentGatewayAdapterTest {
             lastSessionRequest = objectMapper.readTree(exchange.getRequestBody());
             respond(exchange,
                     "{\"id\":\"CS1234567890\",\"sessionData\":\"encrypted-session-data\",\"expiresAt\":\"2026-08-01T14:00:00Z\"}");
+        });
+        server.createContext("/v72/payments/PSP12345/amountUpdates", exchange -> {
+            lastAmountUpdateRequest = objectMapper.readTree(exchange.getRequestBody());
+            respond(exchange, "{\"pspReference\":\"ADJUST123\"}");
         });
         server.start();
         ProviderCredentialResolver resolver = new ProviderCredentialResolver() {
@@ -72,6 +77,44 @@ class AdyenPaymentGatewayAdapterTest {
                 new ProviderHttpTransport(), resolver, objectMapper,
                 "http://127.0.0.1:" + server.getAddress().getPort() + "/v72"
         );
+    }
+
+    @Test
+    void advertisesAndExecutesIncrementalAuthorizationOnlyWhenMerchantIsEnabled() {
+        ProviderCredentialResolver resolver = new ProviderCredentialResolver() {
+            @Override
+            public String requireCredential(GatewayConnection connection) {
+                return """
+                        {"apiKey":"AQEtest","merchantAccount":"ElectraHubTest","clientKey":"test_client_key",
+                         "countryCode":"SE","manualCaptureEnabled":true,"authorizationAdjustmentEnabled":true}
+                        """;
+            }
+
+            @Override
+            public Optional<String> webhookSecret(GatewayConnection connection) {
+                return Optional.of(HMAC_KEY);
+            }
+        };
+        AdyenPaymentGatewayAdapter enabled = new AdyenPaymentGatewayAdapter(
+                new ProviderHttpTransport(), resolver, objectMapper,
+                "http://127.0.0.1:" + server.getAddress().getPort() + "/v72"
+        );
+
+        assertThat(enabled.validate(connection()).capabilities())
+                .contains(com.electrahub.paymentgateway.domain.GatewayContracts.GatewayCapability.INCREMENTAL_AUTHORIZE);
+
+        GatewayOperationRequest request = new GatewayOperationRequest(
+                UUID.randomUUID(), "payment-intent-123", null, "increment-operation-123",
+                "increment-idem-123", GatewayOperationType.INCREMENTAL_AUTHORIZE,
+                new BigDecimal("40.00"), "SEK", "account-123", null, null, "PSP12345", null, Instant.now()
+        );
+        var result = enabled.execute(request, connection());
+
+        assertThat(result.status()).isEqualTo(GatewayOperationStatus.PENDING_RECONCILIATION);
+        assertThat(result.providerReference()).isEqualTo("PSP12345");
+        assertThat(lastAmountUpdateRequest.path("reference").asText()).isEqualTo("increment-operation-123");
+        assertThat(lastAmountUpdateRequest.path("amount").path("value").asLong()).isEqualTo(4000L);
+        assertThat(lastAmountUpdateRequest.path("amount").path("currency").asText()).isEqualTo("SEK");
     }
 
     @AfterEach

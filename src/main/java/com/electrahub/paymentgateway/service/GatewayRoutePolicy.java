@@ -99,6 +99,20 @@ public class GatewayRoutePolicy {
             );
         }
 
+        if (operationType == GatewayOperationType.INCREMENTAL_AUTHORIZE) {
+            if (!route.enabled()) {
+                return RouteResolution.rejected(
+                        "PAYMENT_ROUTE_DISABLED",
+                        "Incremental authorization requires an enabled payment route."
+                );
+            }
+            if (connection.status() != GatewayConnectionStatus.ACTIVE) {
+                return RouteResolution.rejected(
+                        "PAYMENT_ROUTE_NOT_CONFIGURED",
+                        "Incremental authorization requires an active payment connection."
+                );
+            }
+        }
         if (connection.status() != GatewayConnectionStatus.ACTIVE
                 && connection.status() != GatewayConnectionStatus.DISABLED) {
             return RouteResolution.rejected(
@@ -124,6 +138,7 @@ public class GatewayRoutePolicy {
     private Set<GatewayCapability> requiredCapabilities(GatewayOperationType operationType) {
         return switch (operationType) {
             case AUTHORIZE -> Set.of(GatewayCapability.AUTHORIZE);
+            case INCREMENTAL_AUTHORIZE -> Set.of(GatewayCapability.INCREMENTAL_AUTHORIZE);
             case VOID -> Set.of(GatewayCapability.VOID);
             case CAPTURE -> Set.of(GatewayCapability.CAPTURE);
             case REFUND -> Set.of(GatewayCapability.REFUND);

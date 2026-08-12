@@ -127,6 +127,43 @@ class GatewayRoutePolicyTest {
         assertThat(result.code()).isEqualTo("PAYMENT_ROUTE_DISABLED");
     }
 
+    @Test
+    void incrementalAuthorizationRequiresItsCapabilityAndAnActiveConnection() {
+        PaymentRoute route = route(true, Set.of(GatewayCapability.AUTHORIZE));
+        Instant now = Instant.parse("2026-07-21T12:00:00Z");
+
+        assertThat(policy.evaluateOperation(
+                route,
+                connection(GatewayConnectionStatus.ACTIVE, Set.of(GatewayCapability.AUTHORIZE)),
+                GatewayOperationType.INCREMENTAL_AUTHORIZE,
+                now
+        ).code()).isEqualTo("PAYMENT_METHOD_NOT_SUPPORTED");
+
+        assertThat(policy.evaluateOperation(
+                route,
+                connection(GatewayConnectionStatus.DISABLED, Set.of(GatewayCapability.INCREMENTAL_AUTHORIZE)),
+                GatewayOperationType.INCREMENTAL_AUTHORIZE,
+                now
+        ).code()).isEqualTo("PAYMENT_ROUTE_NOT_CONFIGURED");
+
+        assertThat(policy.evaluateOperation(
+                route(false, Set.of(GatewayCapability.AUTHORIZE)),
+                connection(GatewayConnectionStatus.ACTIVE, Set.of(GatewayCapability.INCREMENTAL_AUTHORIZE)),
+                GatewayOperationType.INCREMENTAL_AUTHORIZE,
+                now
+        ).code()).isEqualTo("PAYMENT_ROUTE_DISABLED");
+
+        assertThat(policy.evaluateOperation(
+                route,
+                connection(GatewayConnectionStatus.ACTIVE, Set.of(
+                        GatewayCapability.AUTHORIZE,
+                        GatewayCapability.INCREMENTAL_AUTHORIZE
+                )),
+                GatewayOperationType.INCREMENTAL_AUTHORIZE,
+                now
+        ).approved()).isTrue();
+    }
+
     private PaymentRoute route(boolean enabled, Set<GatewayCapability> requiredCapabilities) {
         return new PaymentRoute(
                 UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "US", "USD", "USD",
