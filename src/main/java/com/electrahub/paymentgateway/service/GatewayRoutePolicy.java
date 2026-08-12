@@ -58,10 +58,13 @@ public class GatewayRoutePolicy {
                 "APPROVED",
                 "A compatible payment route was resolved.",
                 route.id(),
+                route.merchantAccountId(),
                 connection.id(),
                 connection.provider(),
                 connection.environment(),
+                route.settlementCurrency(),
                 route.configurationVersion(),
+                connection.configurationVersion(),
                 connection.capabilities()
         );
     }
@@ -134,10 +137,13 @@ public class GatewayRoutePolicy {
                 "APPROVED",
                 "A compatible payment route was resolved.",
                 route.id(),
+                route.merchantAccountId(),
                 connection.id(),
                 connection.provider(),
                 connection.environment(),
+                route.settlementCurrency(),
                 route.configurationVersion(),
+                connection.configurationVersion(),
                 connection.capabilities()
         );
     }

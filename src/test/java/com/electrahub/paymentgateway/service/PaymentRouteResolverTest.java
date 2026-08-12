@@ -56,6 +56,11 @@ class PaymentRouteResolverTest {
 
         assertThat(first.approved()).isTrue();
         assertThat(first.routeId()).isEqualTo(candidate.route().id());
+        assertThat(first.merchantAccountId()).isEqualTo(candidate.route().merchantAccountId());
+        assertThat(first.connectionId()).isEqualTo(candidate.connection().id());
+        assertThat(first.settlementCurrency()).isEqualTo("EUR");
+        assertThat(first.routeConfigurationVersion()).isEqualTo(candidate.route().configurationVersion());
+        assertThat(first.connectionConfigurationVersion()).isEqualTo(candidate.connection().configurationVersion());
         assertThat(second).isEqualTo(first);
         verify(configurationService, times(1)).findCandidates(request);
     }

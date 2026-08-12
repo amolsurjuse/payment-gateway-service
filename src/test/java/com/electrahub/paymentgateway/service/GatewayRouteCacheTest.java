@@ -51,8 +51,11 @@ class GatewayRouteCacheTest {
                 "Route resolved.",
                 UUID.randomUUID(),
                 UUID.randomUUID(),
+                UUID.randomUUID(),
                 GatewayProvider.STRIPE,
                 GatewayEnvironment.SANDBOX,
+                "EUR",
+                1,
                 1,
                 Set.of(GatewayCapability.AUTHORIZE, GatewayCapability.STATUS_QUERY)
         );

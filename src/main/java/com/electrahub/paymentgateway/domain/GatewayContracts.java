@@ -333,10 +333,13 @@ public final class GatewayContracts {
             String code,
             String message,
             UUID routeId,
+            UUID merchantAccountId,
             UUID connectionId,
             GatewayProvider provider,
             GatewayEnvironment environment,
-            int configurationVersion,
+            String settlementCurrency,
+            int routeConfigurationVersion,
+            int connectionConfigurationVersion,
             Set<GatewayCapability> capabilities
     ) {
         public RouteResolution {
@@ -344,7 +347,7 @@ public final class GatewayContracts {
         }
 
         public static RouteResolution rejected(String code, String message) {
-            return new RouteResolution(false, code, message, null, null, null, null, 0, Set.of());
+            return new RouteResolution(false, code, message, null, null, null, null, null, null, 0, 0, Set.of());
         }
     }
 
