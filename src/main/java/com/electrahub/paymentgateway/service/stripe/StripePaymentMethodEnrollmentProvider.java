@@ -75,6 +75,8 @@ public class StripePaymentMethodEnrollmentProvider implements PaymentMethodEnrol
             GatewayConnection connection,
             String providerCustomerReference,
             UUID enrollmentId,
+            String countryCode,
+            String currency,
             String returnUrl
     ) {
         validateConfiguration(connection);
@@ -105,7 +107,8 @@ public class StripePaymentMethodEnrollmentProvider implements PaymentMethodEnrol
     @Override
     public ProviderEnrollmentResult retrieve(
             GatewayConnection connection,
-            String providerEnrollmentReference
+            String providerEnrollmentReference,
+            String providerResult
     ) {
         validateConfiguration(connection);
         String setupIntentReference = requireSetupIntent(providerEnrollmentReference);

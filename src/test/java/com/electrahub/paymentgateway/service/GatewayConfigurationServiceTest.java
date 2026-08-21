@@ -349,13 +349,18 @@ class GatewayConfigurationServiceTest {
                     )
             ).doesNotThrowAnyException();
 
-            assertThatThrownBy(() -> GatewayConfigurationService.requirePaymentMethodSupported(
-                    provider,
-                    PaymentMethodType.CARD_ON_FILE
-            )).isInstanceOfSatisfying(GatewayBusinessException.class, exception ->
-                    org.assertj.core.api.Assertions.assertThat(exception.code())
-                            .isEqualTo("PAYMENT_METHOD_NOT_SUPPORTED")
-            );
+            if (provider == GatewayProvider.ADYEN) {
+                org.assertj.core.api.Assertions.assertThatCode(() ->
+                        GatewayConfigurationService.requirePaymentMethodSupported(provider, PaymentMethodType.CARD_ON_FILE)
+                ).doesNotThrowAnyException();
+            } else {
+                assertThatThrownBy(() -> GatewayConfigurationService.requirePaymentMethodSupported(
+                        provider, PaymentMethodType.CARD_ON_FILE
+                )).isInstanceOfSatisfying(GatewayBusinessException.class, exception ->
+                        org.assertj.core.api.Assertions.assertThat(exception.code())
+                                .isEqualTo("PAYMENT_METHOD_NOT_SUPPORTED")
+                );
+            }
         }
     }
 

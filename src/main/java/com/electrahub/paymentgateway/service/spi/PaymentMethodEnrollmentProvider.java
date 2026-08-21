@@ -17,12 +17,15 @@ public interface PaymentMethodEnrollmentProvider {
             GatewayConnection connection,
             String providerCustomerReference,
             UUID enrollmentId,
+            String countryCode,
+            String currency,
             String returnUrl
     );
 
     ProviderEnrollmentResult retrieve(
             GatewayConnection connection,
-            String providerEnrollmentReference
+            String providerEnrollmentReference,
+            String providerResult
     );
 
     record ProviderCustomer(String reference) {

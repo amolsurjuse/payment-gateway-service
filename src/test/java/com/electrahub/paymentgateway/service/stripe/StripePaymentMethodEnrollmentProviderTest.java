@@ -69,9 +69,9 @@ class StripePaymentMethodEnrollmentProviderTest {
 
         var customer = provider.createCustomer(connection(), "account-hash");
         var enrollment = provider.start(
-                connection(), customer.reference(), enrollmentId, "electrahub://payment/card-setup"
+                connection(), customer.reference(), enrollmentId, "US", "USD", "electrahub://payment/card-setup"
         );
-        var result = provider.retrieve(connection(), enrollment.reference());
+        var result = provider.retrieve(connection(), enrollment.reference(), null);
 
         assertThat(customer.reference()).isEqualTo("cus_test");
         assertThat(enrollment.clientSecret()).isEqualTo("seti_test_secret_123");
