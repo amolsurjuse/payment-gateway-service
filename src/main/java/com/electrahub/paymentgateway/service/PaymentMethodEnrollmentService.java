@@ -89,6 +89,8 @@ public class PaymentMethodEnrollmentService {
                 connection,
                 customerReference,
                 enrollmentId,
+                request.chargingCountry().trim().toUpperCase(Locale.ROOT),
+                request.currency().trim().toUpperCase(Locale.ROOT),
                 validateReturnUrl(request.returnUrl())
         );
         Instant now = Instant.now();
@@ -120,6 +122,7 @@ public class PaymentMethodEnrollmentService {
                 connection.provider(),
                 connection.environment(),
                 PaymentMethodEnrollmentStatus.CREATED,
+                providerEnrollment.reference(),
                 providerEnrollment.clientSecret(),
                 providerEnrollment.publishableKey(),
                 request.currency().trim().toUpperCase(Locale.ROOT),
@@ -147,11 +150,12 @@ public class PaymentMethodEnrollmentService {
 
         GatewayConnection connection = configurationService.requireConnection(enrollment.connectionId());
         PaymentMethodEnrollmentProvider provider = requireProvider(connection.provider());
-        ProviderEnrollmentResult result = provider.retrieve(connection, enrollment.providerEnrollmentReference());
+        ProviderEnrollmentResult result = provider.retrieve(
+                connection, enrollment.providerEnrollmentReference(), request.providerResult());
         if (!"succeeded".equalsIgnoreCase(result.status())) {
             if (Set.of("canceled", "requires_payment_method").contains(result.status().toLowerCase(Locale.ROOT))) {
                 updateStatus(enrollment.id(), PaymentMethodEnrollmentStatus.FAILED, null);
-                throw new GatewayBusinessException("PAYMENT_METHOD_ENROLLMENT_FAILED", "Stripe did not complete card enrollment.");
+                throw new GatewayBusinessException("PAYMENT_METHOD_ENROLLMENT_FAILED", "The payment provider did not complete card enrollment.");
             }
             throw new GatewayBusinessException("PAYMENT_METHOD_ENROLLMENT_PENDING", "Payment method enrollment is still pending.");
         }

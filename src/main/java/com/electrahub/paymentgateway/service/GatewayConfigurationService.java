@@ -593,9 +593,11 @@ public class GatewayConfigurationService {
 
     static void requirePaymentMethodSupported(GatewayProvider provider, PaymentMethodType paymentMethod) {
         boolean supported = switch (provider) {
-            case MOLLIE, ADYEN, RAZORPAY -> paymentMethod == PaymentMethodType.HOSTED_CHECKOUT;
+            case MOLLIE, RAZORPAY -> paymentMethod == PaymentMethodType.HOSTED_CHECKOUT;
             case TWO_C2P -> paymentMethod == PaymentMethodType.HOSTED_CHECKOUT;
             case MOCK, STRIPE -> paymentMethod == PaymentMethodType.CARD_ON_FILE;
+            case ADYEN -> paymentMethod == PaymentMethodType.HOSTED_CHECKOUT
+                    || paymentMethod == PaymentMethodType.CARD_ON_FILE;
         };
         if (!supported) {
             throw new GatewayBusinessException(

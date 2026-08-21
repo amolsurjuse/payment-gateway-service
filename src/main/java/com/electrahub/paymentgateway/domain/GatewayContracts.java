@@ -401,7 +401,8 @@ public final class GatewayContracts {
     }
 
     public record CompleteGatewayPaymentMethodEnrollmentRequest(
-            @NotBlank @Size(max = 128) String accountReference
+            @NotBlank @Size(max = 128) String accountReference,
+            @Size(max = 20000) String providerResult
     ) {
     }
 
@@ -412,6 +413,7 @@ public final class GatewayContracts {
             GatewayProvider provider,
             GatewayEnvironment environment,
             PaymentMethodEnrollmentStatus status,
+            String providerReference,
             String clientSecret,
             String publishableKey,
             String currency,

@@ -138,13 +138,50 @@ public class AdyenPaymentGatewayAdapter implements PaymentGatewayAdapter {
     public GatewayOperationResult execute(GatewayOperationRequest request, GatewayConnection connection) {
         validateProfile(connection);
         return switch (request.operationType()) {
-            case AUTHORIZE -> createSession(request, connection);
+            case AUTHORIZE -> request.paymentMethodReference() == null || request.paymentMethodReference().isBlank()
+                    ? createSession(request, connection)
+                    : authorizeStoredCard(request, connection);
             case CAPTURE -> modification(request, connection, "captures");
             case VOID -> modification(request, connection, "cancels");
             case REFUND -> modification(request, connection, "refunds");
             case STATUS_QUERY -> queryStatus(new GatewayOperationStatusQuery(
                     null, request.operationId(), request.idempotencyKey(), request.providerReference()), connection);
         };
+    }
+
+    private GatewayOperationResult authorizeStoredCard(GatewayOperationRequest request, GatewayConnection connection) {
+        Credentials credentials = credentials(connection);
+        if (request.providerCustomerReference() == null || request.providerCustomerReference().isBlank()) {
+            throw new GatewayBusinessException("ADYEN_SHOPPER_REFERENCE_REQUIRED", "Adyen shopper reference is required.");
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("merchantAccount", credentials.merchantAccount());
+        body.put("amount", amount(request));
+        body.put("reference", bounded(request.operationId(), 80));
+        body.put("paymentMethod", Map.of("type", "scheme", "storedPaymentMethodId", request.paymentMethodReference()));
+        body.put("shopperReference", request.providerCustomerReference());
+        body.put("shopperInteraction", "ContAuth");
+        body.put("recurringProcessingModel", "UnscheduledCardOnFile");
+        JsonNode response = requireSuccessful(transport.postJson(
+                uri(connection, credentials, "/payments"),
+                headers(credentials, request.idempotencyKey()),
+                json(body)
+        ));
+        String resultCode = response.path("resultCode").asText();
+        String pspReference = response.path("pspReference").asText();
+        if (pspReference.isBlank()) {
+            throw new GatewayUnavailableException("ADYEN_PAYMENT_RESPONSE_INVALID", "Adyen returned no payment reference.");
+        }
+        if ("Refused".equalsIgnoreCase(resultCode) || "Cancelled".equalsIgnoreCase(resultCode)) {
+            throw new GatewayBusinessException("ADYEN_PAYMENT_DECLINED", "Adyen declined the stored-card payment.");
+        }
+        GatewayOperationStatus status = "Authorised".equalsIgnoreCase(resultCode)
+                ? GatewayOperationStatus.SUCCEEDED : GatewayOperationStatus.PENDING_RECONCILIATION;
+        return new GatewayOperationResult(
+                UUID.randomUUID(), status,
+                status == GatewayOperationStatus.SUCCEEDED ? "AUTHORIZED" : "PROVIDER_STATUS_PENDING",
+                pspReference, pspReference, null, Instant.now()
+        );
     }
 
     /** Adyen's final financial result is webhook-driven; no generic payment-status lookup exists. */
